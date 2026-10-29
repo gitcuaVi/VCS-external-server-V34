@@ -293,15 +293,22 @@ class PriorityChangedHandler
         $eligibility = 'not_applicable';
         $reason = $direction.'_priority';
 
+        $isFirstPriorityChange = $checkpointedStage?->trigger_type === 'initial';
+
         if ($direction === 'upgrade') {
-            $eligibility = $wasFailed || $previousRemaining === 0 ? 'ineligible' : 'eligible';
-            if ($eligibility === 'eligible') {
+            if ($isFirstPriorityChange) {
+                $eligibility = 'ineligible';
+                $reason = 'first_priority_change_after_creation';
+            } elseif ($wasFailed) {
+                $eligibility = 'ineligible';
+                $reason = 'overdue_before_priority_change';
+            } elseif ($previousRemaining === 0) {
+                $eligibility = 'ineligible';
+                $reason = 'no_remaining_time_before_priority_change';
+            } else {
+                $eligibility = 'eligible';
                 $extraTime = min($previousRemaining, intdiv($newGoal, 2));
                 $reason = 'upgrade_extra_time_eligible';
-            } else {
-                $reason = $wasFailed
-                    ? 'overdue_before_priority_change'
-                    : 'no_remaining_time_before_priority_change';
             }
         } elseif ($direction === 'downgrade' && $wasFailed) {
             $reason = 'overdue_before_priority_change';

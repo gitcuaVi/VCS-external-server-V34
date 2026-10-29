@@ -20,17 +20,20 @@ class TicketCreatedHandler
     protected SlaInitializationService $initService;
     protected TimelineService $timelineService;
     protected FreshdeskApiService $freshdeskService;
+    protected SlaStageService $stageService;
 
     public function __construct(
         TimerService $timerService,
         SlaInitializationService $initService,
         TimelineService $timelineService,
-        FreshdeskApiService $freshdeskService
+        FreshdeskApiService $freshdeskService,
+        ?SlaStageService $stageService = null
     ) {
         $this->timerService = $timerService;
         $this->initService = $initService;
         $this->timelineService = $timelineService;
         $this->freshdeskService = $freshdeskService;
+        $this->stageService = $stageService ?? app(SlaStageService::class);
     }
 
     /**
@@ -66,8 +69,29 @@ class TicketCreatedHandler
                 ? Carbon::parse($ticketData['created_at'])
                 : now());
 
+        $isEnded = $this->timerService->isEndStatus($ticket->status);
+
+        if ($ticket->status === 'Closed' && ! $ticket->closed_at) {
+            $ticket->closed_at = $initialTimestamp;
+        }
+
+        if ($ticket->status === 'Resolved' && ! $ticket->resolved_at) {
+            $ticket->resolved_at = $initialTimestamp;
+        }
+
+        $ticket->save();
+
         $this->initService->ensureSlaInitialized($ticket, $initialTimestamp);
         $this->createInitialStage($ticket, $event, $initialTimestamp);
+
+        if ($isEnded) {
+            $this->stageService->checkpointOpenStage(
+                $ticket,
+                $event,
+                $initialTimestamp,
+                'ticket_created_in_end_status'
+            );
+        }
 
         $groupLayer = $this->timerService->getGroupLayer($ticket->group_id, $ticketData['group_name'] ?? null);
         if ($groupLayer) {

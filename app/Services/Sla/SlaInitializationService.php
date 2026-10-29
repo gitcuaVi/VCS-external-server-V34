@@ -70,12 +70,14 @@ class SlaInitializationService
             $rtDue = (clone $createdAt)->addSeconds($config->rt_seconds);
         }
 
+        $isEnded = $this->timerService->isEndStatus($ticket->status);
+
         $ttrMetric = $ticket->getOrCreateTtrMetric();
         $ttrMetric->update([
             'total_seconds' => $config->total_seconds,
             'used_seconds' => 0,
             'processing_mode' => 'priority-driven',
-            'started_at' => $createdAt ?? null,
+            'started_at' => $isEnded ? null : $createdAt,
             'original_due_date_ttr' => $ttrDue ?? null,
             'latest_due_date_ttr' => $ttrDue ?? null,
         ]);
@@ -85,8 +87,8 @@ class SlaInitializationService
         $rtMetric->update([
             'total_seconds' => $rtTotal,
             'used_seconds' => 0,
-            'status' => 'running',
-            'started_at' => $createdAt ?? null,
+            'status' => $isEnded ? 'ended_closed_no_reply' : 'running',
+            'started_at' => $isEnded ? null : $createdAt,
             'original_due_date_rt' => $rtDue ?? null,
             'latest_due_date_rt' => $rtDue ?? null,
         ]);
