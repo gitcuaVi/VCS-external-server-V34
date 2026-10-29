@@ -1,0 +1,289 @@
+<?php
+
+namespace App\Services\Sla;
+
+use App\Models\FreshdeskGroup;
+use App\Models\Ticket;
+use App\Models\TicketFirstResponseMetric;
+use App\Models\TicketGroupMetric;
+use App\Models\TicketTtrMetric;
+use App\Services\FreshdeskApiService;
+use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\Log;
+
+class AppTimerSyncService
+{
+    protected FreshdeskApiService $freshdeskService;
+
+    protected TimerService $timerService;
+
+    protected SlaComplianceService $complianceService;
+
+    public function __construct(
+        FreshdeskApiService $freshdeskService,
+        TimerService $timerService,
+        SlaComplianceService $complianceService
+    ) {
+        $this->freshdeskService = $freshdeskService;
+        $this->timerService = $timerService;
+        $this->complianceService = $complianceService;
+    }
+
+    /**
+     * Sync ticket SLA metrics to Freshdesk custom field 'cf_timer_history'.
+     */
+    public function syncTicket(Ticket $ticket): void
+    {
+        $this->complianceService->captureCurrent($ticket);
+        $data = $this->generateCompactJson($ticket);
+        $jsonString = json_encode($data);
+
+        $customFields = array_merge(
+            [
+                'cf_timer_history' => $jsonString,
+            ],
+            $this->buildSlaCustomFields($ticket)
+        );
+
+        $payload = [
+            'custom_fields' => $customFields,
+        ];
+
+        $synced = $this->freshdeskService->updateTicket($ticket->ticket_id, $payload);
+
+        if (! $synced) {
+            $apiErrorContext = $this->freshdeskService->getLastErrorContext() ?? [];
+            Log::error('SLA Timer sync to Freshdesk failed', array_merge([
+                'ticket_id' => $ticket->ticket_id,
+                'json_size' => strlen($jsonString),
+                'phase' => 'sync_to_freshdesk',
+            ], $apiErrorContext));
+
+            $reason = $apiErrorContext['reason'] ?? ($apiErrorContext['status'] ?? ($apiErrorContext['error'] ?? 'unknown'));
+            $status = $apiErrorContext['status'] ?? null;
+            $reasonDetail = $status !== null ? "{$reason}, status={$status}" : (string) $reason;
+            $retryAfter = $apiErrorContext['retry_after'] ?? null;
+            $retryAfterStr = $retryAfter ? ", retry_after={$retryAfter}" : '';
+            throw new \RuntimeException("Freshdesk sync failed for ticket {$ticket->ticket_id} (reason: {$reasonDetail}{$retryAfterStr})");
+        }
+
+        $ticket->touch();
+
+        Log::info('SLA Timer synced to Freshdesk', [
+            'ticket_id' => $ticket->ticket_id,
+            'json_size' => strlen($jsonString),
+        ]);
+    }
+
+    /**
+     * Generate the compact JSON format for UI.
+     * All durations are converted from seconds to milliseconds.
+     */
+    public function generateCompactJson(Ticket $ticket): array
+    {
+        $ticket->loadMissing(['groupMetrics', 'firstResponseMetric', 'statusMetric', 'slaStages.metrics']);
+
+        $rtMetric = $ticket->getOrCreateFirstResponseMetric();
+        $ttrMetric = $ticket->getOrCreateTtrMetric();
+        $statusMetric = $ticket->getOrCreateStatusMetric();
+
+        $subGroupIds = $ticket->groupMetrics
+            ->whereNotNull('group_id')
+            ->pluck('group_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $groupNameMap = $subGroupIds->isEmpty()
+            ? collect()
+            : FreshdeskGroup::query()
+                ->whereIn('group_id', $subGroupIds)
+                ->pluck('name', 'group_id');
+
+        // 1. Group Timers (vcx = L1, fo = L2, bo = L3, po = L4)
+        $groupData = [];
+        $layersMap = [
+            'L1' => 'vcx',
+            'L2' => 'fo',
+            'L3' => 'bo',
+            'L4' => 'po',
+        ];
+
+        foreach ($layersMap as $layer => $alias) {
+            // Aggregate record (Tong Layer - group_id IS NULL)
+            $timer = $ticket->groupMetrics->where('layer', $layer)->whereNull('group_id')->first();
+            if ($timer) {
+                $groupData[$alias] = $this->formatTimer($timer);
+            }
+
+            // Sub-group records (Chi tiet tung Group con trong Layer)
+            $subTimers = $ticket->groupMetrics->where('layer', $layer)->whereNotNull('group_id');
+            if ($subTimers->isNotEmpty()) {
+                $subMap = [];
+                foreach ($subTimers as $st) {
+                    $groupName = $groupNameMap->get($st->group_id, (string) $st->group_id);
+                    $subMap[$groupName] = [
+                        'bu' => max(0, (int) $st->used_seconds) * 1000,
+                        'ls' => $st->started_at ? $st->started_at->toIso8601ZuluString() : null,
+                    ];
+                }
+                $groupData[$alias.'_g'] = $subMap;
+            }
+        }
+
+        // Release 1 keeps Priority/Extra Time calculations in the database only.
+        // These keys stay compatible with the current app payload but must not
+        // expose calculated Release 2 values to Freshdesk yet.
+        $extraInfo = [
+            'sg' => null,
+            'et' => null,
+            'pu' => null,
+            'pc' => null,
+            'dn' => null,
+            'rsg' => null,
+            'ret' => null,
+            'rpu' => null,
+            'rfr' => null,
+        ];
+
+        $currentResoSeconds = max(0, (int) ($statusMetric->resolution_total_seconds ?? 0));
+
+        return [
+            'db' => $ttrMetric->latest_due_date_ttr?->toIso8601ZuluString(),
+            'fb' => $rtMetric->latest_due_date_rt?->toIso8601ZuluString(),
+            'gr' => $groupData,
+            'wt' => [
+                'tw' => max(0, $statusMetric->waiting_total_seconds ?? 0) * 1000,
+                'ws' => $statusMetric->waiting_started_at ? $statusMetric->waiting_started_at->toIso8601ZuluString() : null,
+            ],
+            'pt' => [
+                'tp' => max(0, $statusMetric->pending_total_seconds ?? 0) * 1000,
+                'ps' => $statusMetric->pending_started_at ? $statusMetric->pending_started_at->toIso8601ZuluString() : null,
+            ],
+            'rt' => [
+                'at' => max(0, $rtMetric->total_seconds ?? 0) * 1000,
+                'us' => max(0, (int) $rtMetric->used_seconds) * 1000,
+                'rs' => $rtMetric->started_at ? $rtMetric->started_at->toIso8601ZuluString() : null,
+            ],
+            'rs' => [
+                'us' => $currentResoSeconds * 1000,
+                'rs' => $statusMetric->resolution_started_at ? $statusMetric->resolution_started_at->toIso8601ZuluString() : null,
+            ],
+            'ttr' => [
+                'at' => max(0, $ttrMetric->total_seconds ?? 0) * 1000,
+                'us' => $this->effectiveTtrUsed($ticket, $ttrMetric) * 1000,
+                'tu' => $this->effectiveTtrUsed($ticket, $ttrMetric) * 1000,
+            ],
+            'et' => $extraInfo,
+        ];
+    }
+
+    /**
+     * Format timer model to array in milliseconds.
+     */
+    protected function formatTimer(TicketGroupMetric $timer): array
+    {
+        $used = max(0, (int) $timer->used_seconds);
+        $total = max(0, (int) $timer->total_seconds);
+
+        return [
+            'at' => $total * 1000,
+            'bu' => $used * 1000,
+            'ot' => max(0, $used - $total) * 1000,
+            'rt' => max(0, $total - $used) * 1000,
+            'ls' => $timer->started_at ? $timer->started_at->toIso8601ZuluString() : null,
+        ];
+    }
+
+    /**
+     * Build SLA custom fields for Freshdesk.
+     */
+    protected function buildSlaCustomFields(Ticket $ticket): array
+    {
+        $ticket->loadMissing('groupMetrics');
+        $rtMetric = $ticket->getOrCreateFirstResponseMetric();
+        $ttrMetric = $ticket->getOrCreateTtrMetric();
+
+        $rtUsed = $this->effectiveRtUsed($rtMetric);
+        $rtTotal = max(0, (int) $rtMetric->total_seconds);
+        $rtOverdue = $this->complianceService->currentRtOverdue($ticket);
+        $rtDiff = $rtTotal - $rtUsed;
+
+        $ttrUsed = $this->effectiveTtrUsed($ticket, $ttrMetric);
+        $ttrTotal = max(0, (int) $ttrMetric->total_seconds);
+
+        $ttrOverdue = $this->complianceService->currentTtrOverdue($ticket);
+
+        $ttrDiff = $ttrTotal - $ttrUsed;
+
+        $fields = [
+            'cf_rt_time' => (string) $rtDiff,
+            'cf_rt_overdue' => $rtOverdue ? 'Yes' : 'No',
+            'cf_ttr_time' => (string) $ttrDiff,
+            'cf_ttr_overdue' => $ttrOverdue ? 'Yes' : 'No',
+            'cf_sla_violated' => $ticket->sla_violated ? 'Fail' : 'Pass',
+            'cf_final_sla_compliance' => $ticket->final_sla_compliant === null
+                ? null
+                : ($ticket->final_sla_compliant ? 'Pass' : 'Fail'),
+            'cf_processing_mode' => $ttrMetric->processing_mode,
+        ];
+
+        $firstFailedMetric = $ticket->slaStages()
+            ->whereHas('metrics', fn ($query) => $query
+                ->where('metric_result', 'fail')
+                ->whereNotNull('overdue_at'))
+            ->with([
+                'metrics' => fn ($query) => $query
+                    ->where('metric_result', 'fail')
+                    ->whereNotNull('overdue_at')
+                    ->orderBy('overdue_at'),
+            ])
+            ->orderBy('sequence_number')
+            ->first();
+
+        if ($firstFailedMetric) {
+            $failedMetric = $firstFailedMetric->metrics->first();
+            $fields['cf_fail_time'] = $this->formatFreshdeskDateTime($failedMetric->overdue_at);
+            $fields['cf_fail_stage'] = 'Stage '.$firstFailedMetric->sequence_number;
+            $fields['cf_fail_flow'] = $firstFailedMetric->processing_mode;
+        }
+
+        $layerFields = ['L1' => 'l1', 'L2' => 'l2', 'L3' => 'l3', 'L4' => 'l4'];
+        foreach ($layerFields as $layer => $prefix) {
+            $timer = $ticket->groupMetrics->where('layer', $layer)->whereNull('group_id')->first();
+            $total = $timer ? max(0, (int) $timer->total_seconds) : 0;
+            $used = $timer ? $this->effectiveGroupUsed($timer) : 0;
+            $violated = $used > $total;
+
+            $fields["cf__{$prefix}_time_allowed"] = (string) $total;
+            $fields["cf__{$prefix}_time_actual"] = (string) $used;
+            $fields["cf__{$prefix}_violated"] = $violated ? 'Yes' : 'No';
+        }
+
+        return $fields;
+    }
+
+    protected function formatFreshdeskDateTime(CarbonInterface $dateTime): string
+    {
+        $timezone = (string) config('freshdesk.timezone', 'Asia/Ho_Chi_Minh');
+
+        return $dateTime->avoidMutation()
+            ->timezone($timezone)
+            ->toIso8601String();
+    }
+
+    protected function effectiveRtUsed(TicketFirstResponseMetric $metric): int
+    {
+        return max(0, (int) $metric->used_seconds);
+    }
+
+    protected function effectiveGroupUsed(TicketGroupMetric $metric): int
+    {
+        return max(0, (int) $metric->used_seconds);
+    }
+
+    protected function effectiveTtrUsed(Ticket $ticket, TicketTtrMetric $metric): int
+    {
+        return max(0, (int) $metric->used_seconds);
+    }
+}

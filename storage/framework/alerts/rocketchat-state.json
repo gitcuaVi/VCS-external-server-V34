@@ -1,0 +1,56 @@
+{
+    "version": 1,
+    "global": [],
+    "notifications": {
+        "system:40670d6fe1373b95394bea99c5ddcb629851e90d": [],
+        "system:cb25e5e43f9206859d85b222df32a09a0ce708f7": [],
+        "system:eb3b3241ee9e7064d2c5f1294adfd3792c0ef333": [],
+        "queue:b68437f94389b9b6e4be09305886d475638d359d": [],
+        "system:3264db4bef3c6cfb786c42dc41d9a3280d9f17e6": []
+    },
+    "redis_incidents": {
+        "8ae7e9cc6883ab0f6c371a19385c944bef660b0f": {
+            "status": "down",
+            "lookup_code": "EVT-20260917-084900-FUNEU4",
+            "first_detected_at": 1789609740,
+            "last_detected_at": 1789696494,
+            "occurrence_count": 2,
+            "last_down_alert_at": null,
+            "down_alert_sent_at": null
+        }
+    },
+    "system_incidents": {
+        "805f04b4a2a793ebd12d2cabfc69b8f3a61347dd": {
+            "lookup_code": "EVT-20260914-091204-DWZNUT",
+            "first_detected_at": 1789351924,
+            "last_detected_at": 1790808004,
+            "occurrence_count": 15160,
+            "last_sent_at": null
+        },
+        "535b9ac8a061a13fe5000b22c2bfdb070e12beb1": {
+            "lookup_code": "EVT-20260914-091204-PJDBG0",
+            "first_detected_at": 1789351924,
+            "last_detected_at": 1790808004,
+            "occurrence_count": 15160,
+            "last_sent_at": null
+        },
+        "6c8540d2377af1e5d6cad4f300e4ee71bd4fdd5e": {
+            "lookup_code": "EVT-20260914-101801-BJSEFV",
+            "first_detected_at": 1789355881,
+            "last_detected_at": 1790808001,
+            "occurrence_count": 15094,
+            "last_sent_at": null
+        }
+    },
+    "database_incidents": {
+        "36ccc90018ae36c3fca45c65ccf92e16497f73d8": {
+            "status": "down",
+            "lookup_code": "EVT-20260918-085506-VLQS3F",
+            "first_detected_at": 1789696506,
+            "last_detected_at": 1790559288,
+            "occurrence_count": 2,
+            "last_down_alert_at": null,
+            "down_alert_sent_at": null
+        }
+    }
+}
