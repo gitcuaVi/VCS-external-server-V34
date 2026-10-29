@@ -112,6 +112,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Initial Priority Window (seconds)
+    |--------------------------------------------------------------------------
+    | Thời gian cửa sổ ổn định sau khi tạo ticket.
+    | Đổi priority trong khoảng này được xem là điều chỉnh khởi tạo và không cấp Extra Time.
+    */
+
+    'initial_priority_window_seconds' => (int) env(
+        'FRESHDESK_INITIAL_PRIORITY_WINDOW_SECONDS',
+        30
+    ),
+
+    /*
+    |--------------------------------------------------------------------------
     | Status Categories for SLA Timer Logic
     |--------------------------------------------------------------------------
     */

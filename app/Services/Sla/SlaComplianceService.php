@@ -233,6 +233,13 @@ class SlaComplianceService
 
     private function isEnteringEnd(TicketEvent $event): bool
     {
+        if ($event->event_type === TicketEvent::EVENT_TICKET_CREATED) {
+            $status = data_get($event->event_data, 'ticket_data.status')
+                ?? data_get($event->event_data, 'status');
+
+            return $this->timerService->isEndStatus($status);
+        }
+
         if ($event->event_type !== TicketEvent::EVENT_STATUS_CHANGED) {
             return false;
         }

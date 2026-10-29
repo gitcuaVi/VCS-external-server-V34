@@ -22,12 +22,13 @@ class PriorityChangedHandler
         private readonly TimelineService $timelineService,
         private readonly SlaStageService $stageService,
         private readonly FreshdeskApiService $freshdeskService
-    ) {}
+    ) {
+    }
 
     public function handle(int $ticketId, array $ticketData, array $changes, TicketEvent $event): void
     {
         $priorityChange = collect($changes)->firstWhere('field', 'priority');
-        if (! $priorityChange) {
+        if (!$priorityChange) {
             Log::warning('PriorityChangedHandler: priority change is missing', [
                 'ticket_id' => $ticketId,
                 'event_id' => $event->id,
@@ -36,11 +37,13 @@ class PriorityChangedHandler
             return;
         }
 
-        if (TicketSlaStage::query()
-            ->where('ticket_id', $ticketId)
-            ->where('trigger_type', 'priority_change')
-            ->where('opened_by_event_id', $event->id)
-            ->exists()) {
+        if (
+            TicketSlaStage::query()
+                ->where('ticket_id', $ticketId)
+                ->where('trigger_type', 'priority_change')
+                ->where('opened_by_event_id', $event->id)
+                ->exists()
+        ) {
             return;
         }
 
@@ -59,7 +62,7 @@ class PriorityChangedHandler
         $this->initService->ensureSlaInitialized($ticket);
 
         $policy = SlaPolicy::getPolicy((string) $ticket->ticket_type, $newPriority);
-        if (! $policy) {
+        if (!$policy) {
             Log::warning('PriorityChangedHandler: SLA policy is missing', [
                 'ticket_id' => $ticketId,
                 'priority' => $newPriority,
@@ -97,6 +100,26 @@ class PriorityChangedHandler
         if ($processingMode === 'due-driven') {
             $this->storeDueDrivenMetrics($stage, $ticket, $policy);
         } else {
+            $isInitialPriorityAdjustment = $this->isWithinInitialPriorityWindow(
+                $ticket,
+                $changedAt
+            );
+
+            if ($isInitialPriorityAdjustment) {
+                Log::info(
+                    'PriorityChangedHandler: initial priority adjustment detected',
+                    [
+                        'ticket_id' => $ticket->ticket_id,
+                        'event_id' => $event->id,
+                        'old_priority' => $oldPriority,
+                        'new_priority' => $newPriority,
+                        'ticket_created_at' => $ticket->fd_created_at,
+                        'priority_changed_at' => $changedAt->toIso8601String(),
+                        'window_seconds' => max(0, (int) config('freshdesk.initial_priority_window_seconds', 30)),
+                    ]
+                );
+            }
+
             $direction = $this->priorityDirection($oldPriority, $newPriority);
             $this->storeCalculatedMetric(
                 $stage,
@@ -108,7 +131,8 @@ class PriorityChangedHandler
                 (int) $ttr->total_seconds,
                 $ttr->latest_due_date_ttr ? Carbon::parse($ttr->latest_due_date_ttr) : null,
                 $direction,
-                $changedAt
+                $changedAt,
+                $isInitialPriorityAdjustment
             );
 
             if ($rt->hasFirstResponse() || in_array($rt->status, ['ended_replied', 'ended_closed_no_reply'], true)) {
@@ -137,7 +161,8 @@ class PriorityChangedHandler
                     (int) $rt->total_seconds,
                     $rt->latest_due_date_rt ? Carbon::parse($rt->latest_due_date_rt) : null,
                     $direction,
-                    $changedAt
+                    $changedAt,
+                    $isInitialPriorityAdjustment
                 );
             }
         }
@@ -180,13 +205,15 @@ class PriorityChangedHandler
             ->latest('sequence_number')
             ->first();
 
-        if (! $stage || $stage->processing_mode !== 'priority-driven') {
+        if (!$stage || $stage->processing_mode !== 'priority-driven') {
             return null;
         }
 
         $currentPriority = (string) $ticket->priority;
-        if ((int) $stage->sla_policy_id === (int) $policy->id
-            && $stage->priority === $currentPriority) {
+        if (
+            (int) $stage->sla_policy_id === (int) $policy->id
+            && $stage->priority === $currentPriority
+        ) {
             return $stage;
         }
 
@@ -202,6 +229,10 @@ class PriorityChangedHandler
             ->latest('sequence_number')
             ->first();
         $changedAt = Carbon::parse($stage->opened_at);
+        $isInitialPriorityAdjustment = $this->isWithinInitialPriorityWindow(
+            $ticket,
+            $changedAt
+        );
         $direction = $this->priorityDirection($oldPriority, $newPriority);
         $ttr = $ticket->getOrCreateTtrMetric();
         $rt = $ticket->getOrCreateFirstResponseMetric();
@@ -222,7 +253,8 @@ class PriorityChangedHandler
             (int) $ttr->total_seconds,
             $ttr->latest_due_date_ttr ? Carbon::parse($ttr->latest_due_date_ttr) : null,
             $direction,
-            $changedAt
+            $changedAt,
+            $isInitialPriorityAdjustment
         );
 
         if ($rt->hasFirstResponse() || in_array($rt->status, ['ended_replied', 'ended_closed_no_reply'], true)) {
@@ -251,7 +283,8 @@ class PriorityChangedHandler
                 (int) $rt->total_seconds,
                 $rt->latest_due_date_rt ? Carbon::parse($rt->latest_due_date_rt) : null,
                 $direction,
-                $changedAt
+                $changedAt,
+                $isInitialPriorityAdjustment
             );
         }
 
@@ -275,14 +308,15 @@ class PriorityChangedHandler
         int $liveTotal,
         ?Carbon $liveDue,
         string $direction,
-        Carbon $changedAt
+        Carbon $changedAt,
+        bool $isInitialPriorityAdjustment
     ): void {
         $previousMetric = $checkpointedStage?->metrics->firstWhere('metric_type', $metricType);
         $previousRemaining = $previousMetric
             ? max(
                 0,
                 (int) $previousMetric->effective_sla_seconds
-                    - max(0, $usedNow - (int) $previousMetric->used_before_seconds)
+                - max(0, $usedNow - (int) $previousMetric->used_before_seconds)
             )
             : max(0, $liveTotal - $usedNow);
 
@@ -291,20 +325,18 @@ class PriorityChangedHandler
         $baseRemaining = max(0, $newGoal - $usedNow);
         $extraTime = 0;
         $eligibility = 'not_applicable';
-        $reason = $direction.'_priority';
-
-        $isFirstPriorityChange = $checkpointedStage?->trigger_type === 'initial';
+        $reason = $direction . '_priority';
 
         if ($direction === 'upgrade') {
-            if ($isFirstPriorityChange) {
-                $eligibility = 'ineligible';
-                $reason = 'first_priority_change_after_creation';
-            } elseif ($wasFailed) {
+            if ($wasFailed) {
                 $eligibility = 'ineligible';
                 $reason = 'overdue_before_priority_change';
             } elseif ($previousRemaining === 0) {
                 $eligibility = 'ineligible';
                 $reason = 'no_remaining_time_before_priority_change';
+            } elseif ($isInitialPriorityAdjustment) {
+                $eligibility = 'ineligible';
+                $reason = 'priority_adjusted_during_initial_window';
             } else {
                 $eligibility = 'eligible';
                 $extraTime = min($previousRemaining, intdiv($newGoal, 2));
@@ -386,7 +418,7 @@ class PriorityChangedHandler
     private function firstFailedMetric(Ticket $ticket, string $metricType): ?TicketSlaStageMetric
     {
         return TicketSlaStageMetric::query()
-            ->whereHas('stage', fn ($query) => $query->where('ticket_id', $ticket->ticket_id))
+            ->whereHas('stage', fn($query) => $query->where('ticket_id', $ticket->ticket_id))
             ->where('metric_type', $metricType)
             ->where('metric_result', 'fail')
             ->orderBy('overdue_at')
@@ -408,5 +440,28 @@ class PriorityChangedHandler
     private function resolveChangedAt(TicketEvent $event): Carbon
     {
         return $event->occurredAt();
+    }
+
+    private function isWithinInitialPriorityWindow(
+        Ticket $ticket,
+        Carbon $changedAt
+    ): bool {
+        if (!$ticket->fd_created_at) {
+            return false;
+        }
+
+        $windowSeconds = max(
+            0,
+            (int) config(
+                'freshdesk.initial_priority_window_seconds',
+                30
+            )
+        );
+
+        $createdAt = Carbon::parse($ticket->fd_created_at);
+        $windowEndsAt = $createdAt->copy()->addSeconds($windowSeconds);
+
+        return $changedAt->greaterThanOrEqualTo($createdAt)
+            && $changedAt->lessThanOrEqualTo($windowEndsAt);
     }
 }
