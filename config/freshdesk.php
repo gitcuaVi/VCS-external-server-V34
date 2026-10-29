@@ -120,7 +120,7 @@ return [
 
     'initial_priority_window_seconds' => (int) env(
         'FRESHDESK_INITIAL_PRIORITY_WINDOW_SECONDS',
-        30
+        60
     ),
 
     /*
