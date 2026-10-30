@@ -92,7 +92,7 @@ services:
         security_opt:
             - no-new-privileges:true
         ports:
-            - "${APP_PORT:-8340}:80"
+            - "${APP_PORT:-80}:80"
         volumes:
             - laravel-v34-storage:/var/www/html/storage:ro
         command:
