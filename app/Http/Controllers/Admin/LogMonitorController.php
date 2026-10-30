@@ -119,10 +119,10 @@ class LogMonitorController extends Controller
             }
 
             if ($request->filled('search')) {
-                $search = $request->input('search');
-                $query->where(function ($q) use ($search) {
-                    $q->where('delivery_id', 'like', "%{$search}%")
-                        ->orWhere('rocketchat_message_id', 'like', "%{$search}%");
+                $search = (string) $request->input('search');
+                $query->where(function ($q) use ($search): void {
+                    $q->whereRaw('CAST(delivery_id AS TEXT) LIKE ?', ['%'.$search.'%'])
+                        ->orWhere('rocketchat_message_id', 'like', '%'.$search.'%');
                 });
             }
 

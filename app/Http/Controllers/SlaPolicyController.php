@@ -50,15 +50,10 @@ class SlaPolicyController extends Controller
     }
 
     /**
-     * GET /admin/sla-policies/{id}
+     * GET /admin/sla-policies/{policy}
      */
-    public function show(int $id): JsonResponse
+    public function show(SlaPolicy $policy): JsonResponse
     {
-        $policy = SlaPolicy::find($id);
-        if (!$policy) {
-            return response()->json(['error' => 'Policy not found'], 404);
-        }
-
         return response()->json(['data' => $this->formatPolicy($policy)]);
     }
 
@@ -113,15 +108,12 @@ class SlaPolicyController extends Controller
     }
 
     /**
-     * PUT /admin/sla-policies/{id}
+     * PUT /admin/sla-policies/{policy}
      * Cập nhật policy → tạo version mới (giữ nguyên bản ghi cũ cho audit).
      */
-    public function update(Request $request, int $id): JsonResponse
+    public function update(Request $request, SlaPolicy $policy): JsonResponse
     {
-        $current = SlaPolicy::find($id);
-        if (!$current) {
-            return response()->json(['error' => 'Policy not found'], 404);
-        }
+        $current = $policy;
 
         $validator = $this->validatePolicyUpdate($request);
         if ($validator->fails()) {
@@ -159,16 +151,11 @@ class SlaPolicyController extends Controller
     }
 
     /**
-     * DELETE /admin/sla-policies/{id}
+     * DELETE /admin/sla-policies/{policy}
      * Xóa policy (chỉ khi chưa có ticket_sla_stage nào reference).
      */
-    public function destroy(int $id): JsonResponse
+    public function destroy(SlaPolicy $policy): JsonResponse
     {
-        $policy = SlaPolicy::find($id);
-        if (!$policy) {
-            return response()->json(['error' => 'Policy not found'], 404);
-        }
-
         $stageCount = DB::table('ticket_sla_stages')
             ->where('sla_policy_id', $policy->id)
             ->count();
@@ -185,16 +172,11 @@ class SlaPolicyController extends Controller
     }
 
     /**
-     * GET /admin/sla-policies/{id}/history
+     * GET /admin/sla-policies/{policy}/history
      * Xem lịch sử version của một policy (theo ticket_type + priority).
      */
-    public function history(int $id): JsonResponse
+    public function history(SlaPolicy $policy): JsonResponse
     {
-        $policy = SlaPolicy::find($id);
-        if (!$policy) {
-            return response()->json(['error' => 'Policy not found'], 404);
-        }
-
         $versions = SlaPolicy::where('ticket_type', $policy->ticket_type)
             ->where('priority', $policy->priority)
             ->orderByDesc('version')
@@ -203,7 +185,7 @@ class SlaPolicyController extends Controller
         return response()->json([
             'ticket_type' => $policy->ticket_type,
             'priority' => $policy->priority,
-            'versions' => $versions->map(fn($p) => $this->formatPolicy($p)),
+            'versions' => $versions->map(fn ($p) => $this->formatPolicy($p)),
         ]);
     }
 

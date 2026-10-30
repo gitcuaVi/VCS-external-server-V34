@@ -43,6 +43,24 @@ class AdminUser extends Authenticatable
         return $this->hasMany(AdminAuditLog::class);
     }
 
+    public function resolveRouteBinding($value, $field = null): ?self
+    {
+        $routeKey = $field ?? $this->getRouteKeyName();
+
+        if (
+            $routeKey === $this->getKeyName()
+            && filter_var(
+                $value,
+                FILTER_VALIDATE_INT,
+                ['options' => ['min_range' => 1]]
+            ) === false
+        ) {
+            return null;
+        }
+
+        return parent::resolveRouteBinding($value, $field);
+    }
+
     public function hasAnyRole(array $roles): bool
     {
         return in_array($this->role, $roles, true);

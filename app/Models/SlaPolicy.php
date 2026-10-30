@@ -36,6 +36,24 @@ class SlaPolicy extends Model
         return $this->hasMany(TicketSlaStage::class);
     }
 
+    public function resolveRouteBinding($value, $field = null): ?self
+    {
+        $routeKey = $field ?? $this->getRouteKeyName();
+
+        if (
+            $routeKey === $this->getKeyName()
+            && filter_var(
+                $value,
+                FILTER_VALIDATE_INT,
+                ['options' => ['min_range' => 1]]
+            ) === false
+        ) {
+            return null;
+        }
+
+        return parent::resolveRouteBinding($value, $field);
+    }
+
     public function scopeLatestVersion($query)
     {
         return $query->orderByDesc('version');

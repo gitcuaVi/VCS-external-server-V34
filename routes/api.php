@@ -39,9 +39,17 @@ Route::prefix('admin')->middleware('auth.basic.fd')->group(function () {
     });
 
     Route::get('/sla-policies', [SlaPolicyController::class, 'index']);
-    Route::get('/sla-policies/{id}', [SlaPolicyController::class, 'show']);
+    Route::get('/sla-policies/{policy}', [SlaPolicyController::class, 'show'])
+        ->whereNumber('policy')
+        ->missing(static fn () => response()->json(['error' => 'Policy not found'], 404));
     Route::post('/sla-policies', [SlaPolicyController::class, 'store']);
-    Route::put('/sla-policies/{id}', [SlaPolicyController::class, 'update']);
-    Route::delete('/sla-policies/{id}', [SlaPolicyController::class, 'destroy']);
-    Route::get('/sla-policies/{id}/history', [SlaPolicyController::class, 'history']);
+    Route::put('/sla-policies/{policy}', [SlaPolicyController::class, 'update'])
+        ->whereNumber('policy')
+        ->missing(static fn () => response()->json(['error' => 'Policy not found'], 404));
+    Route::delete('/sla-policies/{policy}', [SlaPolicyController::class, 'destroy'])
+        ->whereNumber('policy')
+        ->missing(static fn () => response()->json(['error' => 'Policy not found'], 404));
+    Route::get('/sla-policies/{policy}/history', [SlaPolicyController::class, 'history'])
+        ->whereNumber('policy')
+        ->missing(static fn () => response()->json(['error' => 'Policy not found'], 404));
 });
