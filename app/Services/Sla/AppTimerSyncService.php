@@ -6,6 +6,7 @@ use App\Models\FreshdeskGroup;
 use App\Models\Ticket;
 use App\Models\TicketFirstResponseMetric;
 use App\Models\TicketGroupMetric;
+use App\Models\TicketSlaStageMetric;
 use App\Models\TicketTtrMetric;
 use App\Services\FreshdeskApiService;
 use Carbon\CarbonInterface;
@@ -243,7 +244,11 @@ class AppTimerSyncService
 
         if ($firstFailedMetric) {
             $failedMetric = $firstFailedMetric->metrics->first();
-            $fields['cf_fail_time'] = $this->formatFreshdeskDateTime($failedMetric->overdue_at);
+
+            $fields['cf_fail_time'] = $this->formatFreshdeskDateTime(
+                $this->resolveFreshdeskFailTime($failedMetric)
+            );
+
             $fields['cf_fail_stage'] = 'Stage '.$firstFailedMetric->sequence_number;
             $fields['cf_fail_flow'] = $firstFailedMetric->processing_mode;
         }
@@ -270,6 +275,20 @@ class AppTimerSyncService
         return $dateTime->avoidMutation()
             ->timezone($timezone)
             ->toIso8601String();
+    }
+
+    protected function resolveFreshdeskFailTime(
+        TicketSlaStageMetric $metric
+    ): CarbonInterface {
+        $failTime = $metric->overdue_at->avoidMutation();
+
+        if (! config('freshdesk.fail_time_include_priority_extra', false)) {
+            $failTime = $failTime->subSeconds(
+                max(0, (int) $metric->extra_time_granted_seconds)
+            );
+        }
+
+        return $failTime;
     }
 
     protected function effectiveRtUsed(TicketFirstResponseMetric $metric): int

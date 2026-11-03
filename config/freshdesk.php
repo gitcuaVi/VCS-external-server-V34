@@ -12,6 +12,11 @@ return [
     'api_key' => env('FRESHDESK_API_KEY'),
     'timezone' => env('FRESHDESK_TIMEZONE', 'Asia/Ho_Chi_Minh'),
 
+    'fail_time_include_priority_extra' => filter_var(
+        env('FRESHDESK_FAIL_TIME_INCLUDE_PRIORITY_EXTRA', false),
+        FILTER_VALIDATE_BOOL
+    ),
+
     'api_rate_limit' => [
         'enabled' => filter_var(env('FRESHDESK_API_RATE_LIMIT_ENABLED', true), FILTER_VALIDATE_BOOL),
         'max_requests' => (int) env('FRESHDESK_API_RATE_LIMIT', 50),
