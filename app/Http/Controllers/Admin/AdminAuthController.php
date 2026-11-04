@@ -12,6 +12,12 @@ use Illuminate\Support\Str;
 
 class AdminAuthController extends Controller
 {
+    private const USERNAME_MAX_ATTEMPTS = 5;
+
+    private const IP_MAX_ATTEMPTS = 20;
+
+    private const DECAY_SECONDS = 60;
+
     public function __construct(private readonly AdminAuditService $auditService)
     {
     }
@@ -33,25 +39,57 @@ class AdminAuthController extends Controller
         ]);
 
         $username = trim((string) $credentials['username']);
-        $throttleKey = 'admin-login|'.Str::lower($username).'|'.$request->ip();
 
-        if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
+        $usernameThrottleKey = 'admin-login:username|'
+            .hash('sha256', Str::lower($username));
+
+        $ipThrottleKey = 'admin-login:ip|'
+            .hash('sha256', (string) $request->ip());
+
+        $usernameBlocked = RateLimiter::tooManyAttempts(
+            $usernameThrottleKey,
+            self::USERNAME_MAX_ATTEMPTS
+        );
+
+        $ipBlocked = RateLimiter::tooManyAttempts(
+            $ipThrottleKey,
+            self::IP_MAX_ATTEMPTS
+        );
+
+        if ($usernameBlocked || $ipBlocked) {
+            $retryAfter = max(
+                RateLimiter::availableIn($usernameThrottleKey),
+                RateLimiter::availableIn($ipThrottleKey),
+            );
+
             return back()
                 ->withInput($request->only('username'))
-                ->with('error', 'Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau '.RateLimiter::availableIn($throttleKey).' giây.');
+                ->with(
+                    'error',
+                    'Bạn đã đăng nhập sai quá nhiều lần. Vui lòng thử lại sau '
+                        .$retryAfter.' giây.'
+                );
         }
 
         $admin = AdminUser::query()->where('username', $username)->first();
 
         if (! $admin || ! $admin->is_active || ! Hash::check((string) $credentials['password'], $admin->password)) {
-            RateLimiter::hit($throttleKey, 60);
+            RateLimiter::hit(
+                $usernameThrottleKey,
+                self::DECAY_SECONDS
+            );
+
+            RateLimiter::hit(
+                $ipThrottleKey,
+                self::DECAY_SECONDS
+            );
 
             return back()
                 ->withInput($request->only('username'))
                 ->with('error', 'Tên đăng nhập hoặc mật khẩu không chính xác.');
         }
 
-        RateLimiter::clear($throttleKey);
+        RateLimiter::clear($usernameThrottleKey);
         $request->session()->regenerate();
         $request->session()->put([
             'admin_logged_in' => true,

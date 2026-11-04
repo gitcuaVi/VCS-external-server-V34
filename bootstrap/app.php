@@ -14,8 +14,13 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $trustedProxies = array_filter(array_map(
+            'trim',
+            explode(',', (string) env('TRUSTED_PROXIES', '172.30.34.0/24'))
+        ));
+
         $middleware->trustProxies(
-            at: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.1'],
+            at: $trustedProxies,
             headers: Request::HEADER_X_FORWARDED_FOR
                 | Request::HEADER_X_FORWARDED_PROTO
         );

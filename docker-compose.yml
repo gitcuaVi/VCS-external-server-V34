@@ -28,6 +28,7 @@ services:
             APP_KEY: ${APP_KEY}
             APP_DEBUG: ${APP_DEBUG:-false}
             APP_URL: ${APP_URL:-http://localhost}
+            TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.30.34.0/24}
             LOG_CHANNEL: ${LOG_CHANNEL:-daily}
             LOG_STACK: ${LOG_STACK:-single}
             LOG_DAILY_DAYS: ${LOG_DAILY_DAYS:-90}
@@ -145,6 +146,7 @@ services:
             APP_KEY: ${APP_KEY}
             APP_DEBUG: ${APP_DEBUG:-false}
             APP_URL: ${APP_URL:-http://localhost}
+            TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.30.34.0/24}
             LOG_CHANNEL: ${LOG_CHANNEL:-daily}
             LOG_STACK: ${LOG_STACK:-single}
             LOG_DAILY_DAYS: ${LOG_DAILY_DAYS:-90}
@@ -240,6 +242,7 @@ services:
             APP_KEY: ${APP_KEY}
             APP_DEBUG: ${APP_DEBUG:-false}
             APP_URL: ${APP_URL:-http://localhost}
+            TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.30.34.0/24}
             LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
             LOG_LEVEL: ${LOG_LEVEL:-info}
             CACHE_STORE: ${CACHE_STORE:-redis}
@@ -429,6 +432,9 @@ services:
 networks:
     timer-v34-network:
         driver: bridge
+        ipam:
+            config:
+                - subnet: 172.30.34.0/24
 
 volumes:
     laravel-v34-storage:
