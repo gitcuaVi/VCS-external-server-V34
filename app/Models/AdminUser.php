@@ -8,7 +8,9 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 class AdminUser extends Authenticatable
 {
     public const ROLE_SUPER_ADMIN = 'super_admin';
+
     public const ROLE_SLA_MANAGER = 'sla_manager';
+
     public const ROLE_VIEWER = 'viewer';
 
     public const ROLES = [

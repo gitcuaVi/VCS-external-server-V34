@@ -22,13 +22,12 @@ class PriorityChangedHandler
         private readonly TimelineService $timelineService,
         private readonly SlaStageService $stageService,
         private readonly FreshdeskApiService $freshdeskService
-    ) {
-    }
+    ) {}
 
     public function handle(int $ticketId, array $ticketData, array $changes, TicketEvent $event): void
     {
         $priorityChange = collect($changes)->firstWhere('field', 'priority');
-        if (!$priorityChange) {
+        if (! $priorityChange) {
             Log::warning('PriorityChangedHandler: priority change is missing', [
                 'ticket_id' => $ticketId,
                 'event_id' => $event->id,
@@ -37,13 +36,11 @@ class PriorityChangedHandler
             return;
         }
 
-        if (
-            TicketSlaStage::query()
-                ->where('ticket_id', $ticketId)
-                ->where('trigger_type', 'priority_change')
-                ->where('opened_by_event_id', $event->id)
-                ->exists()
-        ) {
+        if (TicketSlaStage::query()
+            ->where('ticket_id', $ticketId)
+            ->where('trigger_type', 'priority_change')
+            ->where('opened_by_event_id', $event->id)
+            ->exists()) {
             return;
         }
 
@@ -62,7 +59,7 @@ class PriorityChangedHandler
         $this->initService->ensureSlaInitialized($ticket);
 
         $policy = SlaPolicy::getPolicy((string) $ticket->ticket_type, $newPriority);
-        if (!$policy) {
+        if (! $policy) {
             Log::warning('PriorityChangedHandler: SLA policy is missing', [
                 'ticket_id' => $ticketId,
                 'priority' => $newPriority,
@@ -205,15 +202,13 @@ class PriorityChangedHandler
             ->latest('sequence_number')
             ->first();
 
-        if (!$stage || $stage->processing_mode !== 'priority-driven') {
+        if (! $stage || $stage->processing_mode !== 'priority-driven') {
             return null;
         }
 
         $currentPriority = (string) $ticket->priority;
-        if (
-            (int) $stage->sla_policy_id === (int) $policy->id
-            && $stage->priority === $currentPriority
-        ) {
+        if ((int) $stage->sla_policy_id === (int) $policy->id
+            && $stage->priority === $currentPriority) {
             return $stage;
         }
 
@@ -316,7 +311,7 @@ class PriorityChangedHandler
             ? max(
                 0,
                 (int) $previousMetric->effective_sla_seconds
-                - max(0, $usedNow - (int) $previousMetric->used_before_seconds)
+                    - max(0, $usedNow - (int) $previousMetric->used_before_seconds)
             )
             : max(0, $liveTotal - $usedNow);
 
@@ -325,7 +320,7 @@ class PriorityChangedHandler
         $baseRemaining = max(0, $newGoal - $usedNow);
         $extraTime = 0;
         $eligibility = 'not_applicable';
-        $reason = $direction . '_priority';
+        $reason = $direction.'_priority';
 
         if ($direction === 'upgrade') {
             if ($wasFailed) {
@@ -418,7 +413,7 @@ class PriorityChangedHandler
     private function firstFailedMetric(Ticket $ticket, string $metricType): ?TicketSlaStageMetric
     {
         return TicketSlaStageMetric::query()
-            ->whereHas('stage', fn($query) => $query->where('ticket_id', $ticket->ticket_id))
+            ->whereHas('stage', fn ($query) => $query->where('ticket_id', $ticket->ticket_id))
             ->where('metric_type', $metricType)
             ->where('metric_result', 'fail')
             ->orderBy('overdue_at')
@@ -446,7 +441,7 @@ class PriorityChangedHandler
         Ticket $ticket,
         Carbon $changedAt
     ): bool {
-        if (!$ticket->fd_created_at) {
+        if (! $ticket->fd_created_at) {
             return false;
         }
 

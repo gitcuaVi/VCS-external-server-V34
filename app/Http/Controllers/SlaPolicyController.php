@@ -44,7 +44,7 @@ class SlaPolicyController extends Controller
             ->get();
 
         return response()->json([
-            'data' => $policies->map(fn($p) => $this->formatPolicy($p)),
+            'data' => $policies->map(fn ($p) => $this->formatPolicy($p)),
             'total' => $policies->count(),
         ]);
     }
