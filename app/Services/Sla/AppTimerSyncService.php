@@ -2,6 +2,7 @@
 
 namespace App\Services\Sla;
 
+use App\Exceptions\FreshdeskPermanentApiException;
 use App\Models\FreshdeskGroup;
 use App\Models\Ticket;
 use App\Models\TicketFirstResponseMetric;
@@ -65,7 +66,13 @@ class AppTimerSyncService
             $reasonDetail = $status !== null ? "{$reason}, status={$status}" : (string) $reason;
             $retryAfter = $apiErrorContext['retry_after'] ?? null;
             $retryAfterStr = $retryAfter ? ", retry_after={$retryAfter}" : '';
-            throw new \RuntimeException("Freshdesk sync failed for ticket {$ticket->ticket_id} (reason: {$reasonDetail}{$retryAfterStr})");
+            $message = "Freshdesk sync failed for ticket {$ticket->ticket_id} (reason: {$reasonDetail}{$retryAfterStr})";
+
+            if (($apiErrorContext['retryable'] ?? true) === false) {
+                throw new FreshdeskPermanentApiException($message, $status !== null ? (int) $status : null);
+            }
+
+            throw new \RuntimeException($message);
         }
 
         $ticket->touch();

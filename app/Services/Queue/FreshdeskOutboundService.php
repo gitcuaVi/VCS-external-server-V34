@@ -10,6 +10,8 @@ use Illuminate\Support\Str;
 
 class FreshdeskOutboundService
 {
+    public const SYNC_SLA = 'sync_sla';
+
     public function enqueueForEvent(
         TicketEvent $event,
         string $operationType,
@@ -59,7 +61,7 @@ class FreshdeskOutboundService
                 ->lockForUpdate()
                 ->first();
 
-            return FreshdeskOutboundOperation::query()->firstOrCreate(
+            $operation = FreshdeskOutboundOperation::query()->firstOrCreate(
                 ['idempotency_key' => $idempotencyKey],
                 [
                     'operation_id' => (string) Str::uuid(),
@@ -74,6 +76,36 @@ class FreshdeskOutboundService
                     'available_at' => now(),
                 ]
             );
+
+            if ($operationType === self::SYNC_SLA && $operation->wasRecentlyCreated) {
+                $this->supersedePendingSlaSyncs($ticketId, $operation->operation_id);
+            }
+
+            return $operation;
         });
+    }
+
+    /**
+     * A sync_sla always pushes the latest DB state, so only the newest one per
+     * ticket is useful. Older waiting or failed copies become superseded.
+     *
+     * Operations in 'processing' are left alone. A 'dispatched' copy that is
+     * superseded here is skipped by the job, whose claim requires
+     * state = 'dispatched'.
+     */
+    public function supersedePendingSlaSyncs(int $ticketId, string $keepOperationId): int
+    {
+        return FreshdeskOutboundOperation::query()
+            ->where('ticket_id', $ticketId)
+            ->where('operation_type', self::SYNC_SLA)
+            ->whereIn('state', ['ready', 'dispatched', 'failed'])
+            ->where('operation_id', '!=', $keepOperationId)
+            ->update([
+                'state' => 'superseded',
+                'lease_token' => null,
+                'visibility_at' => null,
+                'completed_at' => now(),
+                'last_error' => "Superseded by {$keepOperationId}",
+            ]);
     }
 }

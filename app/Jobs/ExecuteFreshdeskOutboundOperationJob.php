@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Exceptions\FreshdeskApiRateLimitExceededException;
 use App\Exceptions\FreshdeskOutboundConflictException;
+use App\Exceptions\FreshdeskPermanentApiException;
 use App\Exceptions\UncertainFreshdeskOutcomeException;
 use App\Models\FreshdeskOutboundOperation;
 use App\Models\Ticket;
@@ -23,6 +24,12 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
     public int $timeout = 105;
 
     public int $tries = 1;
+
+    /** Transient failures are retried for this long after the operation was created. */
+    private const TRANSIENT_RETRY_WINDOW_HOURS = 24;
+
+    /** Safety stop when created_at is unexpectedly missing (~24h at the 10-minute backoff cap). */
+    private const FALLBACK_MAX_ATTEMPTS = 150;
 
     public function __construct(
         public readonly string $operationId,
@@ -71,14 +78,19 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                 return;
             }
 
-            $ticket = Ticket::query()->where('ticket_id', $operation->ticket_id)->firstOrFail();
+            $ticket = Ticket::query()->where('ticket_id', $operation->ticket_id)->first();
+            if (! $ticket) {
+                throw new FreshdeskPermanentApiException(
+                    "Ticket {$operation->ticket_id} is not tracked by this server."
+                );
+            }
             $remoteId = match ($operation->operation_type) {
                 'sync_sla' => $this->syncSla($syncService, $ticket),
                 'reopen_ticket' => $this->reopenTicket($freshdesk, $operation),
                 'create_followup_ticket' => $this->createFollowupTicket($freshdesk, $operation),
                 'change_due_date' => $this->changeDueDate($freshdesk, $operation),
                 'change_group' => $this->changeGroup($freshdesk, $operation),
-                default => throw new \RuntimeException(
+                default => throw new FreshdeskPermanentApiException(
                     "Unsupported outbound operation: {$operation->operation_type}"
                 ),
             };
@@ -156,28 +168,17 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                     'available_at' => now()->addMinutes(2),
                     'last_error' => $exception->getMessage(),
                 ]);
-        } catch (\Throwable $exception) {
-            $attemptCount = (int) FreshdeskOutboundOperation::query()
-                ->whereKey($this->operationId)
-                ->value('attempt_count');
-            FreshdeskOutboundOperation::query()
-                ->whereKey($this->operationId)
-                ->where('state', 'processing')
-                ->where('lease_token', $this->leaseToken)
-                ->where('generation', $this->generation)
-                ->where('sync_epoch', $this->syncEpoch)
-                ->where('operation_version', $this->operationVersion)
-                ->update([
-                    'state' => 'ready',
-                    'lease_token' => null,
-                    'visibility_at' => null,
-                    'available_at' => now()->addSeconds(min(600, 15 * (2 ** min(5, $attemptCount)))),
-                    'last_error' => $exception->getMessage(),
-                ]);
-            Log::warning('Freshdesk outbound operation deferred', [
+        } catch (FreshdeskPermanentApiException $exception) {
+            $this->markFailed($exception->getMessage());
+            Log::warning('Freshdesk outbound operation failed permanently', [
                 'operation_id' => $this->operationId,
+                'ticket_id' => $operation->ticket_id,
+                'operation_type' => $operation->operation_type,
+                'status' => $exception->status,
                 'reason' => $exception->getMessage(),
             ]);
+        } catch (\Throwable $exception) {
+            $this->handleTransientFailure($operation, $exception);
         } finally {
             $lock->release();
         }
@@ -221,7 +222,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
             $payload['group_id'] = $operation->payload['group_id'];
         }
         if (! $freshdesk->updateTicket($operation->ticket_id, $payload)) {
-            throw new \RuntimeException('Freshdesk reopen PUT failed.');
+            $this->throwForFailedCall($freshdesk, 'Freshdesk reopen PUT failed.');
         }
 
         return (string) $operation->ticket_id;
@@ -306,7 +307,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
         $nextCount = max(0, (int) ($customFields[$countKey] ?? 0)) + 1;
         $dueDate = (string) ($operation->payload['new_due_date'] ?? '');
         if ($dueDate === '') {
-            throw new \RuntimeException('Due Date outbound operation is missing new_due_date.');
+            throw new FreshdeskPermanentApiException('Due Date outbound operation is missing new_due_date.');
         }
 
         $alreadyApplied = $this->sameInstant($remote['due_by'] ?? null, $dueDate)
@@ -339,7 +340,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
             'custom_fields' => $updatedFields,
             'tags' => array_values(array_unique($filteredTags)),
         ])) {
-            throw new \RuntimeException('Freshdesk Due Date PUT failed.');
+            $this->throwForFailedCall($freshdesk, 'Freshdesk Due Date PUT failed.');
         }
 
         $displayDueDate = rescue(
@@ -416,7 +417,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
         $oldGroupId = (string) ($operation->payload['old_group_id'] ?? '');
         $newGroupId = (string) ($operation->payload['new_group_id'] ?? '');
         if ($oldGroupId === '' || $newGroupId === '') {
-            throw new \RuntimeException('Group outbound operation is missing Group IDs.');
+            throw new FreshdeskPermanentApiException('Group outbound operation is missing Group IDs.');
         }
 
         $remoteGroupId = (string) ($remote['group_id'] ?? '');
@@ -430,7 +431,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
             if (! $freshdesk->updateTicket($operation->ticket_id, [
                 'group_id' => (int) $newGroupId,
             ])) {
-                throw new \RuntimeException('Freshdesk Group PUT failed.');
+                $this->throwForFailedCall($freshdesk, 'Freshdesk Group PUT failed.');
             }
         }
 
@@ -448,6 +449,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
         ]);
 
         if (! $freshdesk->addTicketNote($operation->ticket_id, $noteBody, true)) {
+            // addTicketNote does not record an error context, so treat it as transient.
             throw new \RuntimeException('Freshdesk Group audit note POST failed.');
         }
 
@@ -479,6 +481,94 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
     private function marker(): string
     {
         return 'v34op-'.substr(str_replace('-', '', $this->operationId), 0, 20);
+    }
+
+    /**
+     * Network errors, 5xx, timeouts: retry with backoff, but only inside the
+     * retry window. Rate-limit and lock deferrals never reach this branch.
+     */
+    private function handleTransientFailure(
+        FreshdeskOutboundOperation $operation,
+        \Throwable $exception
+    ): void {
+        $current = FreshdeskOutboundOperation::query()
+            ->whereKey($this->operationId)
+            ->first(['operation_id', 'created_at', 'attempt_count']);
+        $attemptCount = (int) ($current?->attempt_count ?? 0);
+        $createdAt = $current?->created_at;
+
+        $windowExpired = $createdAt
+            ? $createdAt->lte(now()->subHours(self::TRANSIENT_RETRY_WINDOW_HOURS))
+            : $attemptCount >= self::FALLBACK_MAX_ATTEMPTS;
+
+        if ($windowExpired) {
+            $this->markFailed($exception->getMessage());
+            Log::warning('Freshdesk outbound operation failed after retry window', [
+                'operation_id' => $this->operationId,
+                'ticket_id' => $operation->ticket_id,
+                'operation_type' => $operation->operation_type,
+                'attempt_count' => $attemptCount,
+                'created_at' => $createdAt?->toIso8601String(),
+                'reason' => $exception->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $this->updateClaimed([
+            'state' => 'ready',
+            'lease_token' => null,
+            'visibility_at' => null,
+            'available_at' => now()->addSeconds(min(600, 15 * (2 ** min(5, $attemptCount)))),
+            'last_error' => $exception->getMessage(),
+        ]);
+        Log::warning('Freshdesk outbound operation deferred', [
+            'operation_id' => $this->operationId,
+            'reason' => $exception->getMessage(),
+        ]);
+    }
+
+    /**
+     * Turn a failed Freshdesk call into the right exception type, using the
+     * retryable flag that FreshdeskApiService recorded for the last call.
+     */
+    private function throwForFailedCall(FreshdeskApiService $freshdesk, string $message): never
+    {
+        $context = $freshdesk->getLastErrorContext() ?? [];
+        $status = isset($context['status']) ? (int) $context['status'] : null;
+
+        if (($context['retryable'] ?? true) === false) {
+            throw new FreshdeskPermanentApiException(
+                $message.' (status='.($status ?? 'n/a').')',
+                $status
+            );
+        }
+
+        throw new \RuntimeException($message);
+    }
+
+    private function markFailed(string $reason): void
+    {
+        $this->updateClaimed([
+            'state' => 'failed',
+            'completed_at' => now(),
+            'lease_token' => null,
+            'visibility_at' => null,
+            'last_error' => mb_substr($reason, 0, 1000),
+        ]);
+    }
+
+    /** Update the operation only while this job still holds its lease. */
+    private function updateClaimed(array $values): int
+    {
+        return FreshdeskOutboundOperation::query()
+            ->whereKey($this->operationId)
+            ->where('state', 'processing')
+            ->where('lease_token', $this->leaseToken)
+            ->where('generation', $this->generation)
+            ->where('sync_epoch', $this->syncEpoch)
+            ->where('operation_version', $this->operationVersion)
+            ->update($values);
     }
 
     private function deferClaim(string $reason, int $seconds): void

@@ -6,6 +6,7 @@ use App\Models\TicketEvent;
 use App\Models\Ticket;
 use App\Models\TicketLogicOutbox;
 use App\Models\FreshdeskOutboundOperation;
+use App\Services\Queue\FreshdeskOutboundService;
 use App\Services\Sla\TicketReplayService;
 use App\Services\Sla\SlaComplianceService;
 use App\Services\SlaCalculationService;
@@ -516,7 +517,7 @@ class ProcessTicketEventJob implements ShouldQueue
                     $this->targetGeneration,
                     $this->syncEpoch,
                 ]);
-                FreshdeskOutboundOperation::query()->firstOrCreate(
+                $syncOperation = FreshdeskOutboundOperation::query()->firstOrCreate(
                     ['idempotency_key' => $idempotencyKey],
                     [
                         'operation_id' => (string) Str::uuid(),
@@ -530,6 +531,12 @@ class ProcessTicketEventJob implements ShouldQueue
                         'available_at' => now(),
                     ]
                 );
+                if ($syncOperation->wasRecentlyCreated) {
+                    app(FreshdeskOutboundService::class)->supersedePendingSlaSyncs(
+                        $this->ticketId,
+                        $syncOperation->operation_id
+                    );
+                }
             }
             $outbox->forceFill([
                 'acked_generation' => max($outbox->acked_generation, $this->targetGeneration),

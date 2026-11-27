@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AdminAuthController;
 use App\Http\Controllers\Admin\AdminSlaPolicyWebController;
 use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\LogMonitorController;
+use App\Http\Controllers\Admin\OutboundOperationController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
@@ -38,6 +39,10 @@ Route::prefix('admin')->group(function () {
         Route::middleware('admin.role:super_admin,sla_manager')->group(function () {
             Route::post('/sla-policies', [AdminSlaPolicyWebController::class, 'store'])->name('admin.sla-policies.store');
             Route::put('/sla-policies/{policy}', [AdminSlaPolicyWebController::class, 'update'])->name('admin.sla-policies.update')->whereNumber('policy');
+
+            Route::get('/outbound-operations', [OutboundOperationController::class, 'index'])->name('admin.outbound.index');
+            Route::post('/outbound-operations/tickets/{ticketId}/resync', [OutboundOperationController::class, 'resyncTicket'])->name('admin.outbound.resync')->whereNumber('ticketId');
+            Route::post('/outbound-operations/{operationId}/retry', [OutboundOperationController::class, 'retryOperation'])->name('admin.outbound.retry')->whereUuid('operationId');
         });
 
         Route::middleware('admin.role:super_admin')->group(function () {
