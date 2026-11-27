@@ -116,6 +116,25 @@ class AdminOutboundRetryTest extends TestCase
         $this->assertSame(2, FreshdeskOutboundOperation::query()->count());
     }
 
+    public function test_older_command_is_refused_and_hidden_when_newer_one_also_failed(): void
+    {
+        $older = $this->operation('change_due_date', 'failed', ['last_error' => 'older-due-error']);
+        FreshdeskOutboundOperation::query()
+            ->whereKey($older->operation_id)
+            ->update(['created_at' => now()->subDays(22)]);
+        $newer = $this->operation('change_due_date', 'failed', ['last_error' => 'newer-due-error']);
+
+        $page = $this->asAdmin(AdminUser::ROLE_SLA_MANAGER)->get('/admin/outbound-operations')->assertOk();
+        $page->assertSee(route('admin.outbound.retry', $newer->operation_id), false);
+        $page->assertDontSee(route('admin.outbound.retry', $older->operation_id), false);
+        $page->assertSee('Đã có lệnh mới hơn');
+
+        $this->asAdmin(AdminUser::ROLE_SLA_MANAGER)
+            ->post("/admin/outbound-operations/{$older->operation_id}/retry")
+            ->assertSessionHas('error');
+        $this->assertSame(2, FreshdeskOutboundOperation::query()->count());
+    }
+
     public function test_command_resyncs_single_ticket(): void
     {
         $this->operation('sync_sla', 'failed');

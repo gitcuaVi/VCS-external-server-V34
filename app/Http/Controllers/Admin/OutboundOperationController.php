@@ -41,6 +41,7 @@ class OutboundOperationController extends Controller
             'ticketId' => $filters['ticket_id'] ?? null,
             'states' => self::STATES,
             'retryableCommands' => OutboundRetryService::RETRYABLE_COMMANDS,
+            'retryableIds' => $this->retry->retryableCommandIds($operations->items()),
         ]);
     }
 

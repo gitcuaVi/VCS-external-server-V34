@@ -139,7 +139,10 @@ class FreshdeskOutboundPermanentFailureTest extends TestCase
                 return Http::response(['id' => self::TICKET_ID, 'group_id' => 100]);
             }
 
-            return Http::response(['message' => 'Method not allowed'], 405);
+            return Http::response([
+                'description' => 'Validation failed',
+                'errors' => [['field' => 'group_id', 'message' => 'There is no group matching the given group_id', 'code' => 'invalid_value']],
+            ], 400);
         });
         $operation = $this->dispatchedOperation('change_group', self::TICKET_ID, [
             'old_group_id' => 100,
@@ -150,7 +153,27 @@ class FreshdeskOutboundPermanentFailureTest extends TestCase
 
         $fresh = $operation->fresh();
         $this->assertSame('failed', $fresh->state);
-        $this->assertStringContainsString('status=405', (string) $fresh->last_error);
+        $this->assertStringContainsString('status=400', (string) $fresh->last_error);
+        $this->assertStringContainsString(
+            'Validation failed - group_id: There is no group matching the given group_id',
+            (string) $fresh->last_error
+        );
+    }
+
+    public function test_sync_failure_message_includes_freshdesk_validation_details(): void
+    {
+        Http::fake(['*' => Http::response([
+            'description' => 'Validation failed',
+            'errors' => [['field' => 'cf_timer_history', 'message' => 'Has 300 characters, it can have maximum of 255', 'code' => 'invalid_value']],
+        ], 400)]);
+
+        try {
+            app(AppTimerSyncService::class)->syncTicket(Ticket::query()->findOrFail(self::TICKET_ID));
+            $this->fail('Expected the sync to fail.');
+        } catch (FreshdeskPermanentApiException $exception) {
+            $this->assertStringContainsString('status=400', $exception->getMessage());
+            $this->assertStringContainsString('cf_timer_history: Has 300 characters', $exception->getMessage());
+        }
     }
 
     public function test_new_sla_sync_supersedes_older_waiting_and_failed_copies(): void

@@ -563,22 +563,23 @@ class FreshdeskApiService
             return null;
         }
 
-        if (is_string($json['description'] ?? null)) {
-            return Str::limit($json['description'], 200);
-        }
+        $summary = is_string($json['description'] ?? null)
+            ? $json['description']
+            : (is_string($json['message'] ?? null) ? $json['message'] : null);
 
-        if (is_string($json['message'] ?? null)) {
-            return Str::limit($json['message'], 200);
-        }
-
-        $errors = $json['errors'] ?? null;
-        if (is_array($errors) && isset($errors[0]) && is_array($errors[0])) {
-            $first = $errors[0];
-            if (is_string($first['message'] ?? null)) {
-                return Str::limit($first['message'], 200);
+        // Validation errors: "Validation failed" alone is useless, so append
+        // each "field: message" pair Freshdesk returns.
+        $details = [];
+        foreach (is_array($json['errors'] ?? null) ? $json['errors'] : [] as $error) {
+            if (! is_array($error) || ! is_string($error['message'] ?? null)) {
+                continue;
             }
+            $field = is_string($error['field'] ?? null) ? $error['field'].': ' : '';
+            $details[] = $field.$error['message'];
         }
 
-        return null;
+        $hint = trim(implode(' - ', array_filter([$summary, implode('; ', $details)])));
+
+        return $hint === '' ? null : Str::limit($hint, 300);
     }
 }

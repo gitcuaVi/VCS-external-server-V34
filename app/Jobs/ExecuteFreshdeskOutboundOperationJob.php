@@ -536,15 +536,14 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
     {
         $context = $freshdesk->getLastErrorContext() ?? [];
         $status = isset($context['status']) ? (int) $context['status'] : null;
+        $hint = $context['error_hint'] ?? null;
+        $detail = ' (status='.($status ?? 'n/a').')'.($hint ? ": {$hint}" : '');
 
         if (($context['retryable'] ?? true) === false) {
-            throw new FreshdeskPermanentApiException(
-                $message.' (status='.($status ?? 'n/a').')',
-                $status
-            );
+            throw new FreshdeskPermanentApiException($message.$detail, $status);
         }
 
-        throw new \RuntimeException($message);
+        throw new \RuntimeException($message.$detail);
     }
 
     private function markFailed(string $reason): void

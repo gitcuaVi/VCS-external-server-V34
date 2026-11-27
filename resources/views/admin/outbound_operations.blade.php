@@ -55,7 +55,7 @@
                     <tr class="hover:bg-slate-50/60">
                         <td class="px-4 py-3 font-mono font-semibold text-slate-900">{{ $op->ticket_id }}</td>
                         <td class="px-4 py-3 text-slate-700">{{ $op->operation_type }}</td>
-                        <td class="px-4 py-3 text-slate-600 max-w-md break-words">{{ \Illuminate\Support\Str::limit((string) $op->last_error, 160) }}</td>
+                        <td class="px-4 py-3 text-slate-600 max-w-md break-words" title="{{ $op->last_error }}">{{ \Illuminate\Support\Str::limit((string) $op->last_error, 300) }}</td>
                         <td class="px-4 py-3 whitespace-nowrap text-slate-600">{{ $op->created_at?->timezone('Asia/Ho_Chi_Minh')->format('H:i d/m/Y') }}</td>
                         <td class="px-4 py-3 whitespace-nowrap text-slate-600">{{ $op->updated_at?->timezone('Asia/Ho_Chi_Minh')->format('H:i d/m/Y') }}</td>
                         <td class="px-4 py-3 text-right whitespace-nowrap">
@@ -67,7 +67,7 @@
                                         <i class="fa-solid fa-rotate mr-1"></i> Sync lại ticket
                                     </button>
                                 </form>
-                            @elseif($op->state === 'failed' && in_array($op->operation_type, $retryableCommands, true))
+                            @elseif(isset($retryableIds[$op->operation_id]))
                                 <form method="POST" action="{{ route('admin.outbound.retry', $op->operation_id) }}"
                                     onsubmit="return confirm('Chạy lại {{ $op->operation_type }} cho ticket {{ $op->ticket_id }}?')">
                                     @csrf
@@ -75,6 +75,8 @@
                                         <i class="fa-solid fa-play mr-1"></i> Chạy lại
                                     </button>
                                 </form>
+                            @elseif($op->state === 'failed' && in_array($op->operation_type, $retryableCommands, true))
+                                <span class="text-[11px] text-slate-400" title="Ticket đã có lệnh cùng loại mới hơn">Đã có lệnh mới hơn</span>
                             @endif
                         </td>
                     </tr>

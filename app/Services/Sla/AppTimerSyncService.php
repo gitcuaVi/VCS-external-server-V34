@@ -66,7 +66,9 @@ class AppTimerSyncService
             $reasonDetail = $status !== null ? "{$reason}, status={$status}" : (string) $reason;
             $retryAfter = $apiErrorContext['retry_after'] ?? null;
             $retryAfterStr = $retryAfter ? ", retry_after={$retryAfter}" : '';
-            $message = "Freshdesk sync failed for ticket {$ticket->ticket_id} (reason: {$reasonDetail}{$retryAfterStr})";
+            $hint = $apiErrorContext['error_hint'] ?? null;
+            $hintStr = $hint ? ": {$hint}" : '';
+            $message = "Freshdesk sync failed for ticket {$ticket->ticket_id} (reason: {$reasonDetail}{$retryAfterStr}){$hintStr}";
 
             if (($apiErrorContext['retryable'] ?? true) === false) {
                 throw new FreshdeskPermanentApiException($message, $status !== null ? (int) $status : null);

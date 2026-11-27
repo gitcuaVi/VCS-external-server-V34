@@ -53,14 +53,7 @@ class OutboundRetryService
             throw new InvalidArgumentException('Chỉ chạy lại được lệnh đổi Due Date / Group đang failed.');
         }
 
-        $hasNewer = FreshdeskOutboundOperation::query()
-            ->where('ticket_id', $operation->ticket_id)
-            ->where('operation_type', $operation->operation_type)
-            ->where('operation_id', '!=', $operation->operation_id)
-            ->where('created_at', '>', $operation->created_at)
-            ->whereIn('state', ['ready', 'dispatched', 'processing', 'completed'])
-            ->exists();
-        if ($hasNewer) {
+        if (! $this->isLatestCommand($operation)) {
             throw new InvalidArgumentException('Đã có lệnh mới hơn cùng loại, không chạy lại lệnh cũ.');
         }
 
@@ -77,5 +70,57 @@ class OutboundRetryService
             'state' => 'ready',
             'available_at' => now(),
         ]);
+    }
+
+    /**
+     * True when no newer command of the same type exists for the ticket, in any
+     * state. A newer failed command still reflects the agent's latest intent, so
+     * an older value must never be replayed over it.
+     */
+    public function isLatestCommand(FreshdeskOutboundOperation $operation): bool
+    {
+        return ! FreshdeskOutboundOperation::query()
+            ->where('ticket_id', $operation->ticket_id)
+            ->where('operation_type', $operation->operation_type)
+            ->where('operation_id', '!=', $operation->operation_id)
+            ->where('created_at', '>', $operation->created_at)
+            ->exists();
+    }
+
+    /**
+     * Operation ids, among the given ones, that may show a "Chạy lại" button:
+     * failed retryable commands that are the newest of their type per ticket.
+     *
+     * @param  iterable<FreshdeskOutboundOperation>  $operations
+     * @return array<string, true>
+     */
+    public function retryableCommandIds(iterable $operations): array
+    {
+        $candidates = collect($operations)->filter(fn (FreshdeskOutboundOperation $op): bool => $op->state === 'failed'
+            && in_array($op->operation_type, self::RETRYABLE_COMMANDS, true));
+        if ($candidates->isEmpty()) {
+            return [];
+        }
+
+        $latest = FreshdeskOutboundOperation::query()
+            ->whereIn('ticket_id', $candidates->pluck('ticket_id')->unique()->all())
+            ->whereIn('operation_type', self::RETRYABLE_COMMANDS)
+            ->selectRaw('ticket_id, operation_type, MAX(created_at) as latest_created_at')
+            ->groupBy('ticket_id', 'operation_type')
+            ->get()
+            ->mapWithKeys(fn ($row): array => [
+                "{$row->ticket_id}:{$row->operation_type}" => (string) $row->latest_created_at,
+            ]);
+
+        return $candidates
+            ->filter(function (FreshdeskOutboundOperation $op) use ($latest): bool {
+                $newest = $latest->get("{$op->ticket_id}:{$op->operation_type}");
+
+                return $newest !== null
+                    && $op->created_at !== null
+                    && $op->created_at->equalTo(\Illuminate\Support\Carbon::parse($newest));
+            })
+            ->mapWithKeys(fn (FreshdeskOutboundOperation $op): array => [$op->operation_id => true])
+            ->all();
     }
 }
