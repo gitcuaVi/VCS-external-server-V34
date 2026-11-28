@@ -11,6 +11,7 @@ use App\Services\Webhooks\DurableWebhookSpool;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -125,7 +126,12 @@ class GoLiveTrackedTicketFilterTest extends TestCase
 
     public function test_spool_retries_early_reply_and_processes_it_after_ticket_created(): void
     {
-        $root = sys_get_temp_dir().DIRECTORY_SEPARATOR.'v34-golive-spool-'.bin2hex(random_bytes(6));
+        // The spool ages files with the real wall clock (time()), so a frozen
+        // test date would make the file look older than the 24h retry window.
+        $this->travelBack();
+        Log::spy();
+
+        $root =sys_get_temp_dir().DIRECTORY_SEPARATOR.'v34-golive-spool-'.bin2hex(random_bytes(6));
         config([
             'freshdesk_spool.root' => $root,
             'freshdesk_spool.require_directory_fsync' => false,
@@ -164,6 +170,20 @@ class GoLiveTrackedTicketFilterTest extends TestCase
                 [TicketEvent::EVENT_TICKET_CREATED, TicketEvent::EVENT_AGENT_REPLIED],
                 TicketEvent::query()->where('ticket_id', 92010)->orderBy('event_timestamp')->pluck('event_type')->all()
             );
+
+            // Every inbound step is traceable by ticket ID in the log file.
+            Log::shouldHaveReceived('info')->withArgs(
+                fn (string $message, array $context = []): bool => $message === 'Freshdesk webhook waiting for ticket_created'
+                    && ($context['ticket_id'] ?? null) === 92010
+                    && ($context['event_type'] ?? null) === 'agent_replied'
+            )->once();
+            Log::shouldHaveReceived('info')->withArgs(
+                fn (string $message, array $context = []): bool => $message === 'Freshdesk inbound webhook processed'
+                    && ($context['ticket_id'] ?? null) === 92010
+                    && ($context['event_type'] ?? null) === 'agent_replied'
+                    && ($context['result'] ?? null) === 'accepted'
+                    && ($context['attempt'] ?? null) === 2
+            )->once();
         } finally {
             File::deleteDirectory($root);
         }

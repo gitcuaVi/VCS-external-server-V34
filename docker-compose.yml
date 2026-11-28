@@ -261,7 +261,8 @@ services:
             APP_DEBUG: ${APP_DEBUG:-false}
             APP_URL: ${APP_URL:-http://localhost}
             TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.30.34.0/24}
-            LOG_CHANNEL: ${LOG_CHANNEL:-stderr}
+            LOG_CHANNEL: ${LOG_CHANNEL:-daily}
+            LOG_DAILY_DAYS: ${LOG_DAILY_DAYS:-90}
             LOG_LEVEL: ${LOG_LEVEL:-info}
             CACHE_STORE: ${CACHE_STORE:-redis}
             QUEUE_CONNECTION: ${QUEUE_CONNECTION:-redis}

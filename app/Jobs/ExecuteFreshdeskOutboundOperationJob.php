@@ -95,21 +95,18 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                 ),
             };
 
-            FreshdeskOutboundOperation::query()
-                ->whereKey($this->operationId)
-                ->where('state', 'processing')
-                ->where('lease_token', $this->leaseToken)
-                ->where('generation', $this->generation)
-                ->where('sync_epoch', $this->syncEpoch)
-                ->where('operation_version', $this->operationVersion)
-                ->update([
-                    'state' => 'completed',
-                    'completed_at' => now(),
-                    'lease_token' => null,
-                    'visibility_at' => null,
-                    'last_error' => null,
-                    'remote_id' => $remoteId,
-                ]);
+            $this->updateClaimed([
+                'state' => 'completed',
+                'completed_at' => now(),
+                'lease_token' => null,
+                'visibility_at' => null,
+                'last_error' => null,
+                'remote_id' => $remoteId,
+            ]);
+            Log::info('Freshdesk outbound operation completed', array_merge(
+                $this->outboundContext($operation),
+                ['remote_id' => $remoteId]
+            ));
         } catch (FreshdeskApiRateLimitExceededException $exception) {
             FreshdeskOutboundOperation::query()
                 ->whereKey($this->operationId)
@@ -126,8 +123,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                     'last_error' => $exception->getMessage(),
                 ]);
             Log::info('Freshdesk outbound operation deferred by global API rate limit', [
-                'operation_id' => $this->operationId,
-                'ticket_id' => $operation->ticket_id,
+                ...$this->outboundContext($operation),
                 'action' => $exception->action,
                 'limit' => $exception->limit,
                 'window_seconds' => $exception->windowSeconds,
@@ -149,7 +145,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                     'last_error' => $exception->getMessage(),
                 ]);
             Log::warning('Freshdesk outbound operation stopped by a state conflict', [
-                'operation_id' => $this->operationId,
+                ...$this->outboundContext($operation),
                 'reason' => $exception->getMessage(),
             ]);
         } catch (UncertainFreshdeskOutcomeException $exception) {
@@ -168,12 +164,14 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
                     'available_at' => now()->addMinutes(2),
                     'last_error' => $exception->getMessage(),
                 ]);
+            Log::warning('Freshdesk outbound operation outcome uncertain, reconcile scheduled', [
+                ...$this->outboundContext($operation),
+                'reason' => $exception->getMessage(),
+            ]);
         } catch (FreshdeskPermanentApiException $exception) {
             $this->markFailed($exception->getMessage());
             Log::warning('Freshdesk outbound operation failed permanently', [
-                'operation_id' => $this->operationId,
-                'ticket_id' => $operation->ticket_id,
-                'operation_type' => $operation->operation_type,
+                ...$this->outboundContext($operation),
                 'status' => $exception->status,
                 'reason' => $exception->getMessage(),
             ]);
@@ -504,9 +502,7 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
         if ($windowExpired) {
             $this->markFailed($exception->getMessage());
             Log::warning('Freshdesk outbound operation failed after retry window', [
-                'operation_id' => $this->operationId,
-                'ticket_id' => $operation->ticket_id,
-                'operation_type' => $operation->operation_type,
+                ...$this->outboundContext($operation),
                 'attempt_count' => $attemptCount,
                 'created_at' => $createdAt?->toIso8601String(),
                 'reason' => $exception->getMessage(),
@@ -523,9 +519,23 @@ class ExecuteFreshdeskOutboundOperationJob implements ShouldQueue
             'last_error' => $exception->getMessage(),
         ]);
         Log::warning('Freshdesk outbound operation deferred', [
-            'operation_id' => $this->operationId,
+            ...$this->outboundContext($operation),
+            'attempt_count' => $attemptCount,
             'reason' => $exception->getMessage(),
         ]);
+    }
+
+    /**
+     * Fields shared by every outbound log line, so one ticket can be traced
+     * end to end by searching its ID in the system log viewer.
+     */
+    private function outboundContext(FreshdeskOutboundOperation $operation): array
+    {
+        return [
+            'operation_id' => $this->operationId,
+            'ticket_id' => $operation->ticket_id,
+            'operation_type' => $operation->operation_type,
+        ];
     }
 
     /**

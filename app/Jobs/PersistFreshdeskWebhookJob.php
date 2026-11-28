@@ -52,6 +52,7 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
         $processingPath = $claim['destination'];
         $processingToken = $claim['token'];
         $receivedAt = null;
+        $envelope = null;
 
         try {
             $envelope = $spool->readEnvelope($processingPath);
@@ -67,6 +68,7 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
                 ->exists();
             if ($committedReceipt) {
                 $spool->markCommitted($processingPath, $processingToken);
+                Log::info('Freshdesk inbound webhook already committed', $this->inboundContext($claim, $envelope));
 
                 return;
             }
@@ -132,25 +134,32 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
                     'reason' => $responseData['reason'] ?? $responseData['message'] ?? 'Webhook payload rejected.',
                     'http_status' => $response->getStatusCode(),
                 ]);
-                Log::error('Freshdesk spool payload quarantined after permanent validation failure', [
-                    'receipt_id' => $envelope['receipt_id'],
-                    'http_status' => $response->getStatusCode(),
-                ]);
+                Log::error('Freshdesk spool payload quarantined after permanent validation failure', array_merge(
+                    $this->inboundContext($claim, $envelope),
+                    ['http_status' => $response->getStatusCode()]
+                ));
 
                 return;
             }
 
             $spool->markCommitted($processingPath, $processingToken);
+            Log::info('Freshdesk inbound webhook processed', array_merge(
+                $this->inboundContext($claim, $envelope),
+                [
+                    'http_status' => $response->getStatusCode(),
+                    'result' => $this->inboundResult($response->getData(true)),
+                ]
+            ));
         } catch (HttpResponseException $exception) {
             $spool->quarantine($processingPath, $processingToken, $exception, [
                 'reason_code' => 'request_validation_failed',
                 'reason' => 'Webhook request validation failed.',
                 'http_status' => $exception->getResponse()->getStatusCode(),
             ]);
-            Log::error('Freshdesk spool payload quarantined after request validation failure', [
-                'receipt_id' => $claim['receipt_id'],
-                'http_status' => $exception->getResponse()->getStatusCode(),
-            ]);
+            Log::error('Freshdesk spool payload quarantined after request validation failure', array_merge(
+                $this->inboundContext($claim, $envelope),
+                ['http_status' => $exception->getResponse()->getStatusCode()]
+            ));
         } catch (\Throwable $exception) {
             try {
                 $retryPath = $spool->retry(
@@ -168,12 +177,10 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
                 throw $recoveryException;
             }
 
-            $context = [
-                'receipt_id' => $claim['receipt_id'],
-                'attempt' => $claim['attempt'] + 1,
+            $context = array_merge($this->inboundContext($claim, $envelope), [
                 'reason_code' => $this->failureReason($exception),
                 'reason' => $exception->getMessage(),
-            ];
+            ]);
 
             if ($exception instanceof FreshdeskGroupMissingException) {
                 $context['group_id'] = $exception->groupId;
@@ -187,6 +194,34 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
                 Log::warning('Freshdesk webhook persistence deferred', $context);
             }
         }
+    }
+
+    /**
+     * Fields shared by every inbound log line, so one ticket can be traced
+     * end to end by searching its ID in the system log viewer.
+     */
+    private function inboundContext(array $claim, ?array $envelope): array
+    {
+        $payload = is_array($envelope['payload'] ?? null) ? $envelope['payload'] : [];
+
+        return [
+            'ticket_id' => $payload['ticket_id'] ?? null,
+            'event_type' => $payload['event_type'] ?? null,
+            'receipt_id' => $claim['receipt_id'],
+            'attempt' => $claim['attempt'] + 1,
+        ];
+    }
+
+    private function inboundResult(mixed $data): string
+    {
+        if (! is_array($data)) {
+            return 'accepted';
+        }
+        if (($data['ignored'] ?? false) === true) {
+            return 'ignored:'.($data['reason'] ?? 'unknown');
+        }
+
+        return 'accepted';
     }
 
     private function failureReason(\Throwable $exception): string

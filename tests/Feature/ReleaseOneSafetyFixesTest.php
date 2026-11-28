@@ -22,6 +22,7 @@ use App\Services\Sla\TimelineService;
 use App\Services\Sla\TimerService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Mockery;
 use Tests\TestCase;
@@ -193,6 +194,7 @@ class ReleaseOneSafetyFixesTest extends TestCase
 
             return Http::response(['success' => true], 200);
         });
+        Log::spy();
 
         (new ExecuteFreshdeskOutboundOperationJob(
             $operationId,
@@ -207,6 +209,12 @@ class ReleaseOneSafetyFixesTest extends TestCase
 
         $operation = FreshdeskOutboundOperation::query()->findOrFail($operationId);
         $this->assertSame('completed', $operation->state);
+        Log::shouldHaveReceived('info')->withArgs(
+            fn (string $message, array $context = []): bool => $message === 'Freshdesk outbound operation completed'
+                && ($context['ticket_id'] ?? null) === 18324
+                && ($context['operation_type'] ?? null) === 'change_due_date'
+                && ($context['operation_id'] ?? null) === $operationId
+        )->once();
         Http::assertSent(fn ($request): bool => $request->method() === 'PUT'
             && $request['due_by'] === '2026-08-05T08:00:00+00:00'
             && $request['custom_fields']['cf_processing_mode_2885394'] === 'due-driven'
