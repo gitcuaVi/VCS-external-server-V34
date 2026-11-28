@@ -178,26 +178,32 @@ class SlaComplianceService
         $ticket->setRawAttributes($locked->getAttributes(), true);
     }
 
-    private function rtEvaluationAt(Ticket $ticket, Carbon $fallback): Carbon
+    /**
+     * When the RT timer stopped: the first agent reply, or the earliest
+     * Resolved/Closed time when the ticket ended without a reply. Null while
+     * RT is still running or paused.
+     */
+    public function rtEndedAt(Ticket $ticket): ?Carbon
     {
         $metric = $ticket->getOrCreateFirstResponseMetric();
         if ($metric->first_response_at) {
             return Carbon::parse($metric->first_response_at);
         }
 
-        if ($metric->status === 'ended_closed_no_reply') {
-            $endAt = collect([$ticket->resolved_at, $ticket->closed_at])
-                ->filter()
-                ->map(fn ($value) => Carbon::parse($value))
-                ->sortBy(fn (Carbon $value) => $value->timestamp)
-                ->first();
-
-            if ($endAt) {
-                return $endAt;
-            }
+        if ($metric->status !== 'ended_closed_no_reply') {
+            return null;
         }
 
-        return $fallback;
+        return collect([$ticket->resolved_at, $ticket->closed_at])
+            ->filter()
+            ->map(fn ($value) => Carbon::parse($value))
+            ->sortBy(fn (Carbon $value) => $value->timestamp)
+            ->first();
+    }
+
+    private function rtEvaluationAt(Ticket $ticket, Carbon $fallback): Carbon
+    {
+        return $this->rtEndedAt($ticket) ?? $fallback;
     }
 
     private function latestEndEntryAt(Ticket $ticket): ?Carbon

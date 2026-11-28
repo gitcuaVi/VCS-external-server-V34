@@ -15,6 +15,7 @@ use App\Services\Queue\TicketLogicOutboxService;
 use App\Services\Sla\BatchTicketEventService;
 use App\Services\Webhooks\DurableWebhookSpool;
 use App\Services\Webhooks\FreshdeskEventNormalizer;
+use App\Services\Webhooks\GoLiveFilter;
 use Carbon\Carbon;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +26,8 @@ use Illuminate\Support\Str;
 
 class WebhookController extends Controller
 {
+    public const REASON_TICKET_NOT_TRACKED_YET = 'ticket_not_tracked_yet';
+
     public function __construct(
         protected FreshdeskApiService $freshdeskService,
         protected FreshdeskEventNormalizer $eventNormalizer,
@@ -96,31 +99,22 @@ class WebhookController extends Controller
             }
 
             // Phase 1 Legacy Ticket Filtering: Ignore tickets created before Go-Live
-            if (config('freshdesk.enable_legacy_ticket_filter') && config('freshdesk.go_live_timestamp')) {
-                $ticketData = $validated['ticket_data'] ?? [];
-                $ticketCreatedAtRaw = $ticketData['created_at']
-                    ?? $request->input('raw_payload.ticket.created_at')
-                    ?? $request->input('ticket.created_at')
-                    ?? null;
+            $ticketCreatedAtRaw = ($validated['ticket_data'] ?? [])['created_at']
+                ?? $request->input('raw_payload.ticket.created_at')
+                ?? $request->input('ticket.created_at')
+                ?? null;
+            if (GoLiveFilter::isBeforeGoLive($ticketCreatedAtRaw)) {
+                Log::info('Webhook Phase 1 Filter: Ignored legacy ticket created before Go-Live', [
+                    'ticket_id' => $ticketId,
+                    'created_at' => (string) $ticketCreatedAtRaw,
+                    'go_live_timestamp' => (string) config('freshdesk.go_live_timestamp'),
+                ]);
 
-                if ($ticketCreatedAtRaw) {
-                    $ticketCreatedAt = Carbon::parse($ticketCreatedAtRaw);
-                    $goLiveTimestamp = Carbon::parse(config('freshdesk.go_live_timestamp'));
-
-                    if ($ticketCreatedAt->lessThan($goLiveTimestamp)) {
-                        Log::info('Webhook Phase 1 Filter: Ignored legacy ticket created before Go-Live', [
-                            'ticket_id' => $ticketId,
-                            'created_at' => $ticketCreatedAt->toIso8601String(),
-                            'go_live_timestamp' => $goLiveTimestamp->toIso8601String(),
-                        ]);
-
-                        return response()->json([
-                            'success' => true,
-                            'ignored' => true,
-                            'reason' => 'legacy_ticket_phase_1',
-                        ], 200);
-                    }
-                }
+                return response()->json([
+                    'success' => true,
+                    'ignored' => true,
+                    'reason' => 'legacy_ticket_phase_1',
+                ], 200);
             }
 
             $normalizedEvent = $this->eventNormalizer->normalize(array_merge(
@@ -149,27 +143,20 @@ class WebhookController extends Controller
             }
 
             $ticket = Ticket::where('ticket_id', $ticketId)->first();
+
+            $untrackedResponse = $this->untrackedTicketResponse($ticket, $ticketId, $eventType, $eventTimestamp);
+            if ($untrackedResponse) {
+                return $untrackedResponse;
+            }
+
             $oldValues = $ticket ? $ticket->toArray() : [];
             $incomingUpdatedAt = Carbon::parse($ticketData['updated_at'] ?? $eventTimestamp)->utc();
             $shouldApplySnapshot = ! $ticket
                 || ! $ticket->fd_updated_at
                 || $incomingUpdatedAt->gte($ticket->fd_updated_at);
 
-            if (empty($ticketData) && $ticket) {
-                Log::info('ticket_data is empty, using existing ticket from DB', [
-                    'ticket_id' => $ticketId,
-                ]);
-                $ticketData = [
-                    'subject' => $ticket->subject,
-                    'status' => $ticket->status,
-                    'priority' => $ticket->priority,
-                    'ticket_type' => $ticket->ticket_type,
-                    'group_id' => $ticket->group_id,
-                    'group_name' => $this->freshdeskService->resolveGroupName($ticket->group_id),
-                    'requester_id' => $ticket->requester_id,
-                    'created_at' => $ticket->fd_created_at,
-                    'updated_at' => Carbon::parse($eventTimestamp)->toISOString(),
-                ];
+            if ($ticket) {
+                $ticketData = $this->fillMissingTicketDataFromDb($ticketData, $ticket, $eventTimestamp);
             }
 
             $status = $ticketData['status'] ?? null;
@@ -373,6 +360,70 @@ class WebhookController extends Controller
                 'correlation_id' => $correlationId,
             ], 500);
         }
+    }
+
+    /**
+     * With the go-live filter on, only ticket_created may start tracking a
+     * ticket. Conversation webhooks carry no created_at, so an unknown ticket
+     * is either pre-go-live (never tracked) or a new ticket whose
+     * ticket_created has not arrived yet.
+     *
+     * - Recent event: 503, so the durable spool retries it after ticket_created.
+     * - Older than the grace window: ignored, nothing is stored.
+     */
+    private function untrackedTicketResponse(
+        ?Ticket $ticket,
+        int $ticketId,
+        string $eventType,
+        string $eventTimestamp
+    ): ?JsonResponse {
+        if ($ticket || $eventType === TicketEvent::EVENT_TICKET_CREATED || ! GoLiveFilter::isActive()) {
+            return null;
+        }
+
+        $graceHours = max(0, (int) config('freshdesk.untracked_event_grace_hours', 2));
+        $isRecent = Carbon::parse($eventTimestamp)->gte(now()->subHours($graceHours));
+
+        Log::info('Webhook for untracked ticket', [
+            'ticket_id' => $ticketId,
+            'event_type' => $eventType,
+            'event_timestamp' => $eventTimestamp,
+            'action' => $isRecent ? 'wait_for_ticket_created' : 'ignored',
+        ]);
+
+        return $isRecent
+            ? response()->json([
+                'success' => false,
+                'reason' => self::REASON_TICKET_NOT_TRACKED_YET,
+            ], 503)
+            : response()->json([
+                'success' => true,
+                'ignored' => true,
+                'reason' => 'untracked_ticket',
+            ], 200);
+    }
+
+    /** Conversation payloads omit most ticket fields; fill only the missing ones from DB. */
+    private function fillMissingTicketDataFromDb(array $ticketData, Ticket $ticket, string $eventTimestamp): array
+    {
+        $fromDb = [
+            'subject' => $ticket->subject,
+            'status' => $ticket->status,
+            'priority' => $ticket->priority,
+            'ticket_type' => $ticket->ticket_type,
+            'group_id' => $ticket->group_id,
+            'requester_id' => $ticket->requester_id,
+            'created_at' => $ticket->fd_created_at,
+        ];
+
+        foreach ($fromDb as $field => $value) {
+            if (($ticketData[$field] ?? null) === null && $value !== null) {
+                $ticketData[$field] = $value;
+            }
+        }
+        $ticketData['updated_at'] ??= Carbon::parse($eventTimestamp)->toISOString();
+
+        return $ticketData;
     }
 
     protected function createQueuedTicketEvent(

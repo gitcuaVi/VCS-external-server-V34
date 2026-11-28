@@ -19,6 +19,11 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!-- Test-only key (not used outside phpunit) -->
+        <env name="APP_KEY" value="base64:dGVzdC1vbmx5LWtleS1mb3ItcGhwdW5pdC0zMmJ5dGU="/>
+        <!-- Keep alert state/audit written by tests out of the tracked storage/framework/alerts -->
+        <env name="ROCKETCHAT_ALERT_STATE_PATH" value="storage/framework/testing/rocketchat-state.json"/>
+        <env name="ROCKETCHAT_AUDIT_PATH" value="storage/framework/testing/rocketchat-audit"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

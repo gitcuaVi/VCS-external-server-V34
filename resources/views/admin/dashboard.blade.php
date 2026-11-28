@@ -256,7 +256,9 @@
                     <i class="fa-solid fa-bug text-sky-600"></i>
                     <span>Nhật ký lỗi ứng dụng</span>
                 </h2>
-                <a href="{{ route('admin.system_logs') }}" class="text-xs text-sky-600 hover:text-sky-800 font-semibold">Xem tất cả &rarr;</a>
+                @if(in_array(session('admin_role'), ['super_admin', 'sla_manager'], true))
+                    <a href="{{ route('admin.system_logs') }}" class="text-xs text-sky-600 hover:text-sky-800 font-semibold">Xem tất cả &rarr;</a>
+                @endif
             </div>
             <div class="space-y-3">
                 @forelse($logFiles as $logFile)
@@ -679,6 +681,12 @@
 
         jsonView.classList.add('hidden');
         placeholder.classList.remove('hidden');
+
+        @if(! in_array(session('admin_role'), ['super_admin', 'sla_manager'], true))
+            placeholder.innerHTML = '<span class="text-slate-500 text-xs">Tài khoản của bạn không có quyền xem nội dung tệp đệm.</span>';
+            return;
+        @endif
+
         placeholder.innerHTML = '<div class="flex items-center space-x-2 text-sky-600 font-semibold text-xs"><i class="fa-solid fa-circle-notch fa-spin text-lg"></i><span>Đang đọc nội dung tệp đệm...</span></div>';
 
         fetch(`{{ route('admin.spool_files.view') }}?type=${type}&path=${encodeURIComponent(path)}`)

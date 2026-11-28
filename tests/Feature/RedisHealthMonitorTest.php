@@ -37,7 +37,7 @@ class RedisHealthMonitorTest extends TestCase
         $rocketChat = $this->mock(RocketChatService::class);
         $rocketChat->shouldReceive('sendSystemErrorAlert')
             ->once()
-            ->with($exception)
+            ->with($exception, null, 'Giám sát Redis')
             ->andReturn(false);
 
         $this->artisan('system-health:redis')->assertSuccessful();

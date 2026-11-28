@@ -14,18 +14,19 @@ Route::middleware('throttle:60,1')->group(function () {
     Route::get('/health/db', [HealthCheckController::class, 'checkDb']);
 });
 
-Route::prefix('webhooks')->middleware('auth.basic.fd')->group(function () {
+Route::prefix('webhooks')->middleware(['auth.basic.fd', 'throttle:api-webhooks'])->group(function () {
     Route::post('/freshdesk', [WebhookController::class, 'handleFreshdeskTicketEvent']);
     Route::post('/batch', [WebhookController::class, 'handleBatchEvents']);
 });
 
-Route::prefix('tickets')->middleware('auth.basic.fd')->group(function () {
+Route::prefix('tickets')->middleware(['auth.basic.fd', 'throttle:api-tickets'])->group(function () {
     Route::post('/change-due-date', [TicketActionController::class, 'changeDueDate']);
     Route::post('/change-group', [TicketActionController::class, 'changeGroup']);
     Route::get('/{id}/history', [TicketActionController::class, 'getHistory'])->whereNumber('id');
 });
 
-Route::prefix('admin')->middleware('auth.basic.fd')->group(function () {
+// Separate credential (ADMIN_API_USER / ADMIN_API_PASSWORD); closed when unset.
+Route::prefix('admin')->middleware(['auth.basic.fd:admin_api', 'throttle:api-admin'])->group(function () {
     Route::get('/rocket-chat-statuses', [RocketChatDeliveryStatusController::class, 'index']);
     Route::post('/refresh-groups', function () {
         if (class_exists(FreshdeskApiService::class)) {

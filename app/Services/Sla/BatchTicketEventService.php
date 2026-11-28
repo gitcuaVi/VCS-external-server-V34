@@ -8,8 +8,10 @@ use App\Services\FreshdeskGroupSyncService;
 use App\Services\Queue\TicketEventOrderService;
 use App\Services\Queue\TicketLogicOutboxService;
 use App\Services\Webhooks\FreshdeskEventNormalizer;
+use App\Services\Webhooks\GoLiveFilter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class BatchTicketEventService
 {
@@ -92,6 +94,23 @@ class BatchTicketEventService
         }
 
         if (! $ticket) {
+            $createdAt = $incomingCreation['event']['ticket_data']['created_at'] ?? null;
+            if (GoLiveFilter::isBeforeGoLive($createdAt)) {
+                Log::info('Batch webhook ignored: ticket created before Go-Live', [
+                    'ticket_id' => $ticketId,
+                    'created_at' => $createdAt,
+                ]);
+
+                return [
+                    'accepted_count' => 0,
+                    'replay_required' => false,
+                    'results' => array_map(
+                        fn (array $item) => $this->result($item, 'rejected', null, 'legacy_ticket'),
+                        $normalizedItems
+                    ),
+                ];
+            }
+
             $ticket = $this->createTicketFromEvent($ticketId, $incomingCreation['event']);
         }
 

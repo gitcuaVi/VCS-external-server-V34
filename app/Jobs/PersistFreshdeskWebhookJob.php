@@ -6,6 +6,7 @@ use App\Exceptions\FreshdeskApiRateLimitExceededException;
 use App\Exceptions\FreshdeskGroupMissingException;
 use App\Exceptions\FreshdeskGroupRefreshFailedException;
 use App\Exceptions\FreshdeskGroupRefreshInProgressException;
+use App\Exceptions\TicketNotTrackedYetException;
 use App\Http\Controllers\WebhookController;
 use App\Http\Requests\FreshdeskWebhookRequest;
 use App\Services\FreshdeskGroupSyncService;
@@ -117,6 +118,10 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
             }
 
             if ($response->getStatusCode() >= 500) {
+                $reason = $response->getData(true)['reason'] ?? null;
+                if ($reason === WebhookController::REASON_TICKET_NOT_TRACKED_YET) {
+                    throw new TicketNotTrackedYetException('Waiting for ticket_created before processing this event.');
+                }
                 throw new RuntimeException("Persisted webhook processing returned HTTP {$response->getStatusCode()}.");
             }
 
@@ -176,6 +181,8 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
 
             if ($spool->isInState($retryPath, 'quarantine')) {
                 Log::error('Freshdesk webhook persistence quarantined after retry policy exhausted', $context);
+            } elseif ($exception instanceof TicketNotTrackedYetException) {
+                Log::info('Freshdesk webhook waiting for ticket_created', $context);
             } else {
                 Log::warning('Freshdesk webhook persistence deferred', $context);
             }
@@ -189,6 +196,7 @@ class PersistFreshdeskWebhookJob implements ShouldQueue
             $exception instanceof FreshdeskGroupRefreshInProgressException => 'group_refresh_in_progress',
             $exception instanceof FreshdeskGroupRefreshFailedException => 'group_refresh_failed',
             $exception instanceof FreshdeskApiRateLimitExceededException => 'freshdesk_rate_limited',
+            $exception instanceof TicketNotTrackedYetException => WebhookController::REASON_TICKET_NOT_TRACKED_YET,
             default => 'processing_failed',
         };
     }

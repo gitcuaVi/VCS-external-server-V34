@@ -43,6 +43,20 @@ return [
         'password' => env('FRESHDESK_WEBHOOK_PASSWORD'),
     ],
 
+    // Separate credential for /api/admin (SLA policy CRUD, group refresh).
+    // Unset, or equal to the webhook credential => /api/admin answers 401.
+    'admin_api_basic_auth' => [
+        'username' => env('ADMIN_API_USER'),
+        'password' => env('ADMIN_API_PASSWORD'),
+    ],
+
+    // Requests per minute per client IP (authenticated traffic).
+    'api_rate_limits' => [
+        'webhooks' => (int) env('API_RATE_LIMIT_WEBHOOKS', 600),
+        'tickets' => (int) env('API_RATE_LIMIT_TICKETS', 300),
+        'admin' => (int) env('API_RATE_LIMIT_ADMIN', 60),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Group Mapping (Freshdesk Group ID → Internal Name)
@@ -171,5 +185,10 @@ return [
 
     'enable_legacy_ticket_filter' => (bool) env('ENABLE_LEGACY_TICKET_FILTER', true),
     'go_live_timestamp' => env('GO_LIVE_TIMESTAMP'),
+
+    // With the go-live filter on, only ticket_created starts tracking a ticket.
+    // Other events of an unknown ticket wait (spool retry) this many hours for
+    // ticket_created, then are ignored as pre-go-live tickets.
+    'untracked_event_grace_hours' => (int) env('FRESHDESK_UNTRACKED_EVENT_GRACE_HOURS', 2),
 
 ];

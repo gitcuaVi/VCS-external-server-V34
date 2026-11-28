@@ -270,14 +270,22 @@ class LogMonitorController extends Controller
 
     public function downloadSystemLog(Request $request)
     {
-        $fileName = basename($request->input('file', 'laravel.log'));
-        $fullPath = storage_path('logs').DIRECTORY_SEPARATOR.$fileName;
+        $requested = $request->input('file', 'laravel.log');
+        $logPath = storage_path('logs');
 
-        if (File::exists($fullPath)) {
-            return response()->download($fullPath);
+        // Only *.log files that sit directly in storage/logs (same list as the viewer).
+        $allowed = File::exists($logPath)
+            ? collect(File::files($logPath))
+                ->filter(static fn ($file): bool => $file->getExtension() === 'log')
+                ->map(static fn ($file): string => $file->getFilename())
+                ->all()
+            : [];
+
+        if (! is_string($requested) || ! in_array($requested, $allowed, true)) {
+            return back()->with('error', 'File log không tồn tại.');
         }
 
-        return back()->with('error', 'File log không tồn tại.');
+        return response()->download($logPath.DIRECTORY_SEPARATOR.$requested);
     }
 
     public function exportRocketChatAudit(Request $request)

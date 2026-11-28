@@ -415,6 +415,7 @@ class RocketChatService
             'ticket_id' => $ticketId,
             'cause' => $cause,
             'fingerprint' => $fingerprint,
+            'endpoint' => $databaseError ? $this->extractDatabaseEndpoint($exception->getMessage()) : null,
             'technical_details' => array_filter([
                 'Mã lỗi' => $sqlState ?: (string) ($rootException->getCode() ?: $exception->getCode() ?: 'N/A'),
                 'Exception' => $exception::class,
@@ -432,6 +433,10 @@ class RocketChatService
     /** @param array<string, mixed> $alert @param array<string, mixed> $incident */
     private function renderIncidentAlert(array $alert, array $incident): array
     {
+        if (in_array($alert['category'], ['redis_connection', 'database_connection'], true)) {
+            return $this->renderConnectionDownAlert($alert, $incident);
+        }
+
         $ticket = $alert['ticket_id'] ? (string) $alert['ticket_id'] : 'Không áp dụng';
         $firstDetected = $this->formattedTimestampFromUnix($incident['first_detected_at']);
         $lastDetected = $this->formattedTimestampFromUnix($incident['last_detected_at']);
@@ -456,6 +461,59 @@ class RocketChatService
                 : '#FF8F00',
             'title' => 'Chi tiết kỹ thuật',
             'text' => $technical,
+        ];
+
+        return $alert;
+    }
+
+    /**
+     * Redis / PostgreSQL outage: say what is down, the impact and what to do,
+     * and mark repeated notifications of the same incident as reminders.
+     *
+     * @param array<string, mixed> $alert
+     * @param array<string, mixed> $incident
+     */
+    private function renderConnectionDownAlert(array $alert, array $incident): array
+    {
+        $isRedis = $alert['category'] === 'redis_connection';
+        $appName = config('app.name', 'External Server Timer V34');
+        $status = ($incident['reminder'] ?? false) ? 'DOWN — NHẮC LẠI' : 'DOWN';
+        $headline = $isRedis ? 'Mất kết nối Redis' : 'Mất kết nối cơ sở dữ liệu';
+        $component = $isRedis ? 'Redis' : 'PostgreSQL';
+        $impact = $isRedis
+            ? 'Hàng đợi tạm ngừng. Webhook vẫn được giữ trong file spool và tự xử lý lại khi Redis hoạt động.'
+            : 'Xử lý SLA tạm ngừng. Webhook vẫn được giữ trong file spool và tự xử lý lại khi CSDL hoạt động.';
+        $recommendation = $isRedis
+            ? 'Kiểm tra container timer-v34-redis và mạng kết nối Redis.'
+            : 'Kiểm tra container timer-v34-postgres và bật lại CSDL.';
+        $ticketLine = $alert['ticket_id'] ? "- **Ticket:** `#{$alert['ticket_id']}`\n" : '';
+        $firstDetected = $this->formattedTimestampFromUnix($incident['first_detected_at']);
+        $lastDetected = $this->formattedTimestampFromUnix($incident['last_detected_at']);
+
+        $alert['text'] = "### 🚨 [NGHIÊM TRỌNG] {$headline} — {$appName}\n"
+            ."- **Môi trường:** `{$alert['environment']}`\n"
+            ."- **Thời gian:** {$lastDetected}\n"
+            .$ticketLine
+            ."- **Trạng thái:** `{$status}`\n"
+            ."- **Ảnh hưởng:** {$impact}\n"
+            ."- **Khuyến nghị:** {$recommendation}\n"
+            ."- **Mã tra cứu:** `{$incident['lookup_code']}`\n"
+            ."- **Lần đầu:** {$firstDetected}";
+
+        // Connection errors may embed the failing SQL; never forward the raw message.
+        $technical = array_filter([
+            'Thành phần' => $component,
+            'Mã lỗi' => $alert['technical_details']['Mã lỗi'] ?? null,
+            'Endpoint' => $alert['endpoint'] ?? null,
+            'Exception' => $alert['technical_details']['Exception'] ?? null,
+            'Số lỗi đã gộp' => (string) $incident['occurrence_count'],
+            'Trace ID' => $alert['technical_details']['Trace ID'] ?? null,
+        ], static fn ($value) => $value !== null && $value !== '');
+
+        $alert['attachment'] = [
+            'color' => '#D32F2F',
+            'title' => 'Chi tiết kỹ thuật',
+            'text' => collect($technical)->map(static fn ($value, $label) => "{$label}: {$value}")->implode("\n"),
         ];
 
         return $alert;

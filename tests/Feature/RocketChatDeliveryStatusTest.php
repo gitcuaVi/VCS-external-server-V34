@@ -25,6 +25,8 @@ class RocketChatDeliveryStatusTest extends TestCase
         config([
             'freshdesk.basic_auth.username' => 'qa-user',
             'freshdesk.basic_auth.password' => 'qa-password',
+            'freshdesk.admin_api_basic_auth.username' => 'qa-admin-api',
+            'freshdesk.admin_api_basic_auth.password' => 'qa-admin-api-password',
             'services.rocketchat.alert_timezone' => 'Asia/Ho_Chi_Minh',
             'rocketchat_audit.enabled' => true,
             'rocketchat_audit.root' => $this->root,
@@ -92,7 +94,12 @@ class RocketChatDeliveryStatusTest extends TestCase
 
         $this->getJson('/api/admin/rocket-chat-statuses')->assertUnauthorized();
 
-        $response = $this->withBasicAuth('qa-user', 'qa-password')
+        // The webhook credential must not open the admin API.
+        $this->withBasicAuth('qa-user', 'qa-password')
+            ->getJson('/api/admin/rocket-chat-statuses')
+            ->assertUnauthorized();
+
+        $response = $this->withBasicAuth('qa-admin-api', 'qa-admin-api-password')
             ->getJson(
                 '/api/admin/rocket-chat-statuses'
                 .'?date=2026-07-31&event_code=REDIS_DOWN&status=success&limit=10'

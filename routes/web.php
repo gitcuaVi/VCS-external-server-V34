@@ -28,15 +28,17 @@ Route::prefix('admin')->group(function () {
         Route::get('/rocketchat-audit', [LogMonitorController::class, 'rocketchatAudit'])->name('admin.rocketchat_audit');
         Route::get('/rocketchat-audit/export', [LogMonitorController::class, 'exportRocketChatAudit'])->name('admin.rocketchat_audit.export');
         Route::post('/rocketchat-audit/{delivery_id}/retry', [LogMonitorController::class, 'retryRocketChatAudit'])->name('admin.rocketchat_audit.retry')->whereUuid('delivery_id');
-        Route::get('/system-logs', [LogMonitorController::class, 'systemLogs'])->name('admin.system_logs');
-        Route::get('/system-logs/download', [LogMonitorController::class, 'downloadSystemLog'])->name('admin.system_logs.download');
         Route::get('/spool-files', [LogMonitorController::class, 'getSpoolFiles'])->name('admin.spool_files');
-        Route::get('/spool-files/view', [LogMonitorController::class, 'readSpoolFileContent'])->name('admin.spool_files.view');
 
         Route::get('/sla-policies', [AdminSlaPolicyWebController::class, 'index'])->name('admin.sla-policies.index');
         Route::get('/sla-policies/{policy}/history', [AdminSlaPolicyWebController::class, 'history'])->name('admin.sla-policies.history')->whereNumber('policy');
 
         Route::middleware('admin.role:super_admin,sla_manager')->group(function () {
+            // Logs and raw spool payloads contain ticket/customer data: not for viewers.
+            Route::get('/system-logs', [LogMonitorController::class, 'systemLogs'])->name('admin.system_logs');
+            Route::get('/system-logs/download', [LogMonitorController::class, 'downloadSystemLog'])->name('admin.system_logs.download');
+            Route::get('/spool-files/view', [LogMonitorController::class, 'readSpoolFileContent'])->name('admin.spool_files.view');
+
             Route::post('/sla-policies', [AdminSlaPolicyWebController::class, 'store'])->name('admin.sla-policies.store');
             Route::put('/sla-policies/{policy}', [AdminSlaPolicyWebController::class, 'update'])->name('admin.sla-policies.update')->whereNumber('policy');
 

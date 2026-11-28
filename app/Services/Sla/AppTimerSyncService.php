@@ -174,6 +174,10 @@ class AppTimerSyncService
                 'at' => max(0, $rtMetric->total_seconds ?? 0) * 1000,
                 'us' => max(0, (int) $rtMetric->used_seconds) * 1000,
                 'rs' => $rtMetric->started_at ? $rtMetric->started_at->toIso8601ZuluString() : null,
+                // st: running | paused | ended_replied | ended_closed_no_reply
+                'st' => $rtMetric->status,
+                // ea: when RT stopped (first reply, or Resolved/Closed without reply)
+                'ea' => $this->complianceService->rtEndedAt($ticket)?->toIso8601ZuluString(),
             ],
             'rs' => [
                 'us' => $currentResoSeconds * 1000,
