@@ -26,6 +26,8 @@ Schedule::command('sla-overdue:scan --limit=500')
 Schedule::command('freshdesk-spool:gc --limit=1000')
     ->everyMinute()
     ->withoutOverlapping(5);
-Schedule::command('rocketchat-audit:prune')
+// Retention for outbound operations, webhook receipts and Rocket.Chat history
+// (config/retention.php). Replaces the former rocketchat-audit:prune schedule.
+Schedule::command('data:prune')
     ->dailyAt('02:30')
     ->withoutOverlapping(60);
