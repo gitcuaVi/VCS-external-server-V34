@@ -8,6 +8,12 @@ use RuntimeException;
 
 class DurableWebhookSpool
 {
+    /** Upper bound of files read per state when the admin searches by ticket ID. */
+    public const TICKET_SEARCH_SCAN_LIMIT = 5000;
+
+    /** Spool envelopes are ~1 KB; anything far larger is not read for summaries. */
+    private const PAYLOAD_SUMMARY_MAX_BYTES = 1048576;
+
     public const STATES = [
         'temporary',
         'ready',
@@ -162,6 +168,80 @@ class DurableWebhookSpool
             'count' => $count,
             'files' => array_values(array_column($recent, 'path')),
         ];
+    }
+
+    /**
+     * Files of one state whose payload belongs to the given ticket, newest first.
+     * Scans at most $scanLimit files so a huge backlog cannot stall the admin page.
+     *
+     * @return array{count: int, files: list<string>, truncated: bool}
+     */
+    public function ticketSnapshot(
+        string $state,
+        int $ticketId,
+        int $recentLimit = 100,
+        int $scanLimit = self::TICKET_SEARCH_SCAN_LIMIT
+    ): array {
+        $matches = [];
+        $scanned = 0;
+        $truncated = false;
+
+        foreach ($this->stateFilePaths($state) as $path) {
+            if ($scanned >= $scanLimit) {
+                $truncated = true;
+                break;
+            }
+            $scanned++;
+
+            if ($this->payloadSummary($path)['ticket_id'] !== $ticketId) {
+                continue;
+            }
+
+            $matches[] = [
+                'path' => $path,
+                'modified_at' => (int) (@filemtime($path) ?: 0),
+            ];
+        }
+
+        $matches = $this->sortRecentFiles($matches);
+
+        return [
+            'count' => count($matches),
+            'files' => array_values(array_column(array_slice($matches, 0, max(0, $recentLimit)), 'path')),
+            'truncated' => $truncated,
+        ];
+    }
+
+    /**
+     * Ticket ID and event type of a spool file, or nulls when it cannot be read
+     * (for example a temporary file that is still being written).
+     *
+     * @return array{ticket_id: ?int, event_type: ?string}
+     */
+    public function payloadSummary(string $path): array
+    {
+        $summary = ['ticket_id' => null, 'event_type' => null];
+
+        $size = @filesize($path);
+        if ($size === false || $size > self::PAYLOAD_SUMMARY_MAX_BYTES) {
+            return $summary;
+        }
+
+        $json = @file_get_contents($path);
+        $envelope = $json === false ? null : json_decode($json, true);
+        $payload = is_array($envelope) && is_array($envelope['payload'] ?? null)
+            ? $envelope['payload']
+            : [];
+
+        $ticketId = $payload['ticket_id'] ?? null;
+        if (is_int($ticketId) || (is_string($ticketId) && ctype_digit($ticketId))) {
+            $summary['ticket_id'] = (int) $ticketId;
+        }
+        if (is_string($payload['event_type'] ?? null)) {
+            $summary['event_type'] = $payload['event_type'];
+        }
+
+        return $summary;
     }
 
     public function claimForDispatch(string $readyPath): array

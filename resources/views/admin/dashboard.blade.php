@@ -366,6 +366,24 @@
             <!-- Dynamic tabs will be inserted here -->
         </div>
 
+        <!-- Ticket filter (Freshdesk spool only) -->
+        <form id="spool-ticket-filter" onsubmit="applySpoolTicketFilter(event)" class="hidden items-center gap-2 px-6 py-3 border-b border-slate-200 bg-white flex-shrink-0 flex-wrap">
+            <label for="spool-ticket-input" class="text-xs font-bold text-slate-600">Ticket ID</label>
+            <div class="relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                <input id="spool-ticket-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="18" autocomplete="off"
+                    placeholder="VD: 19895"
+                    class="w-44 pl-8 pr-3 py-1.5 text-sm font-mono rounded-lg border border-slate-300 focus:border-sky-500 focus:ring-2 focus:ring-sky-200 outline-none">
+            </div>
+            <button type="submit" class="bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-colors shadow-xs">
+                <i class="fa-solid fa-filter mr-1"></i> Tìm
+            </button>
+            <button type="button" id="spool-ticket-clear" onclick="clearSpoolTicketFilter()" class="hidden text-xs font-semibold text-slate-600 hover:text-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                Xoá lọc
+            </button>
+            <span id="spool-ticket-note" class="text-[11px] text-slate-500"></span>
+        </form>
+
         <!-- Modal Body: Split Pane -->
         <div class="flex-1 flex min-h-0 divide-x divide-slate-200">
             <!-- Left Pane: File List -->
@@ -409,6 +427,13 @@
 <script>
     let currentSpoolType = 'rocketchat';
     let currentSpoolFolder = 'ready';
+    let currentSpoolTicket = '';
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
     let autoRefreshTimer = null;
     let autoRefreshCountdownInterval = null;
     let countdownSeconds = 0;
@@ -530,9 +555,16 @@
     function openSpoolModal(type = 'rocketchat', folder = 'ready') {
         currentSpoolType = type;
         currentSpoolFolder = folder;
+        currentSpoolTicket = '';
 
         document.getElementById('modal-spool-title').innerText = spoolConfig[type].title;
         document.getElementById('modal-spool-path').innerText = 'Path: ' + spoolConfig[type].path;
+
+        const filterForm = document.getElementById('spool-ticket-filter');
+        filterForm.classList.toggle('hidden', type !== 'freshdesk');
+        filterForm.classList.toggle('flex', type === 'freshdesk');
+        document.getElementById('spool-ticket-input').value = '';
+        updateSpoolTicketFilterUi(null);
 
         renderSpoolTabs();
 
@@ -553,10 +585,60 @@
             btn.innerHTML = `
                 <span class="w-2 h-2 rounded-full ${tab.color}"></span>
                 <span>${tab.label}</span>
-                <span class="px-2 py-0.5 rounded-full text-[10px] bg-slate-200 text-slate-700 font-mono font-bold">(${tab.count})</span>
+                <span id="spool-tab-count-${tab.id}" class="px-2 py-0.5 rounded-full text-[10px] bg-slate-200 text-slate-700 font-mono font-bold">(${tab.count})</span>
             `;
             container.appendChild(btn);
         });
+    }
+
+    // Badge numbers: whole folder normally, only the searched ticket while filtering.
+    function updateSpoolTabCounts(ticketCounts) {
+        spoolConfig[currentSpoolType].tabs.forEach(tab => {
+            const badge = document.getElementById('spool-tab-count-' + tab.id);
+            if (!badge) return;
+            const filtered = ticketCounts && Object.prototype.hasOwnProperty.call(ticketCounts, tab.id);
+            badge.textContent = `(${filtered ? ticketCounts[tab.id] : tab.count})`;
+            badge.classList.toggle('bg-sky-100', !!filtered);
+            badge.classList.toggle('text-sky-700', !!filtered);
+            badge.classList.toggle('bg-slate-200', !filtered);
+            badge.classList.toggle('text-slate-700', !filtered);
+        });
+    }
+
+    function updateSpoolTicketFilterUi(data) {
+        const note = document.getElementById('spool-ticket-note');
+        const clearBtn = document.getElementById('spool-ticket-clear');
+        clearBtn.classList.toggle('hidden', currentSpoolTicket === '');
+
+        if (currentSpoolTicket === '' || !data) {
+            note.textContent = '';
+            updateSpoolTabCounts(null);
+            return;
+        }
+
+        updateSpoolTabCounts(data.ticket_counts);
+        const total = Object.values(data.ticket_counts || {}).reduce((sum, n) => sum + n, 0);
+        note.textContent = `Ticket ${currentSpoolTicket}: ${total} tệp trên tất cả các bước`
+            + (data.truncated ? ' (thư mục quá lớn, chỉ quét 5.000 tệp mới nhất mỗi bước)' : '');
+    }
+
+    function applySpoolTicketFilter(event) {
+        event.preventDefault();
+        const input = document.getElementById('spool-ticket-input');
+        const value = input.value.trim();
+        if (value !== '' && !/^\d{1,18}$/.test(value)) {
+            document.getElementById('spool-ticket-note').textContent = 'Ticket ID chỉ gồm chữ số.';
+            input.focus();
+            return;
+        }
+        currentSpoolTicket = value;
+        fetchSpoolFiles(currentSpoolType, currentSpoolFolder);
+    }
+
+    function clearSpoolTicketFilter() {
+        currentSpoolTicket = '';
+        document.getElementById('spool-ticket-input').value = '';
+        fetchSpoolFiles(currentSpoolType, currentSpoolFolder);
     }
 
     function closeSpoolModal() {
@@ -596,7 +678,12 @@
         placeholder.classList.remove('hidden');
         placeholder.innerHTML = '<div class="w-16 h-16 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-sky-600 shadow-sm mb-4"><i class="fa-solid fa-file-code text-2xl"></i></div><h4 class="text-sm font-bold text-slate-800 mb-1">Duyệt nội dung JSON Payload</h4><p class="text-xs text-slate-500 text-center max-w-sm leading-relaxed">Chọn một tệp từ danh sách bên trái để xem chi tiết thông số kỹ thuật và dữ liệu sự cố.</p>';
 
-        fetch(`{{ route('admin.spool_files') }}?type=${type}&folder=${folder}`, {
+        const params = new URLSearchParams({ type, folder });
+        if (type === 'freshdesk' && currentSpoolTicket !== '') {
+            params.set('ticket_id', currentSpoolTicket);
+        }
+
+        fetch(`{{ route('admin.spool_files') }}?${params.toString()}`, {
             headers: {
                 'X-Requested-With': 'XMLHttpRequest',
                 'Accept': 'application/json'
@@ -620,13 +707,19 @@
             .then(data => {
                 if (!data) return;
                 loading.classList.add('hidden');
+                if (type === 'freshdesk') {
+                    updateSpoolTicketFilterUi(data);
+                }
                 if (!data.files || data.files.length === 0) {
+                    const filtering = type === 'freshdesk' && currentSpoolTicket !== '';
                     empty.innerHTML = `
                         <div class="w-12 h-12 rounded-2xl bg-slate-100 border border-slate-200/80 flex items-center justify-center text-slate-400 mx-auto mb-3 shadow-xs">
                             <i class="fa-solid fa-inbox text-xl"></i>
                         </div>
-                        <h4 class="text-xs font-bold text-slate-700 mb-1">Chưa có tệp đệm</h4>
-                        <p class="text-[11px] text-slate-400 leading-relaxed max-w-[200px] mx-auto">Thư mục này hiện tại không có tệp tin nào đang chờ xử lý.</p>
+                        <h4 class="text-xs font-bold text-slate-700 mb-1">${filtering ? 'Không có tệp của ticket này' : 'Chưa có tệp đệm'}</h4>
+                        <p class="text-[11px] text-slate-400 leading-relaxed max-w-[220px] mx-auto">${filtering
+                            ? `Bước này không có tệp nào của ticket ${escapeHtml(currentSpoolTicket)}. Xem số trên các tab để biết tệp đang nằm ở bước nào.`
+                            : 'Thư mục này hiện tại không có tệp tin nào đang chờ xử lý.'}</p>
                     `;
                     empty.classList.remove('hidden');
                     return;
@@ -636,14 +729,23 @@
                     const item = document.createElement('div');
                     item.className = 'p-2.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 hover:border-sky-400 cursor-pointer transition-all flex items-center justify-between group shadow-xs';
                     item.onclick = () => viewSpoolFile(type, file.path, item);
+                    const ticketLine = file.ticket_id
+                        ? `<span class="block text-[10px] font-sans text-slate-500 mt-0.5 truncate">
+                               <span class="font-bold text-slate-700">#${escapeHtml(file.ticket_id)}</span>
+                               ${file.event_type ? ' · ' + escapeHtml(file.event_type) : ''}
+                           </span>`
+                        : '';
                     item.innerHTML = `
                         <div class="flex items-center space-x-2 min-w-0">
                             <i class="fa-solid fa-file-code text-slate-400 group-hover:text-sky-600 transition-colors"></i>
-                            <span class="truncate text-slate-700 group-hover:text-slate-900 font-semibold text-xs">${file.name}</span>
+                            <div class="min-w-0">
+                                <span class="block truncate text-slate-700 group-hover:text-slate-900 font-semibold text-xs">${escapeHtml(file.name)}</span>
+                                ${ticketLine}
+                            </div>
                         </div>
                         <div class="text-right flex-shrink-0 ml-2">
-                            <span class="text-[10px] text-sky-600 block font-bold font-mono">${file.size}</span>
-                            <span class="text-[9px] text-slate-400 block">${file.updated_at}</span>
+                            <span class="text-[10px] text-sky-600 block font-bold font-mono">${escapeHtml(file.size)}</span>
+                            <span class="text-[9px] text-slate-400 block">${escapeHtml(file.updated_at)}</span>
                         </div>
                     `;
                     list.appendChild(item);

@@ -371,9 +371,29 @@ class LogMonitorController extends Controller
             $folder = 'ready';
         }
 
+        $ticketId = $type === 'freshdesk' ? $this->spoolTicketFilter($request) : null;
+        if ($ticketId === false) {
+            return response()->json(['error' => 'Ticket ID chỉ gồm chữ số.'], 422);
+        }
+
         $filesList = [];
+        $ticketCounts = null;
+        $truncated = false;
         if ($type === 'freshdesk') {
-            $snapshot = $freshdeskSpool->stateSnapshot($folder, 100);
+            if ($ticketId !== null) {
+                $ticketCounts = [];
+                $snapshot = null;
+                foreach ($allowedFolders as $state) {
+                    $stateSnapshot = $freshdeskSpool->ticketSnapshot($state, $ticketId, 100);
+                    $ticketCounts[$state] = $stateSnapshot['count'];
+                    $truncated = $truncated || $stateSnapshot['truncated'];
+                    if ($state === $folder) {
+                        $snapshot = $stateSnapshot;
+                    }
+                }
+            } else {
+                $snapshot = $freshdeskSpool->stateSnapshot($folder, 100);
+            }
             $totalCount = $snapshot['count'];
             $allFiles = array_map(
                 static fn (string $path): \SplFileInfo => new \SplFileInfo($path),
@@ -391,12 +411,17 @@ class LogMonitorController extends Controller
                 $quarantineMetadata = $type === 'freshdesk' && $folder === 'quarantine'
                     ? $freshdeskSpool->quarantineMetadata($file->getPathname())
                     : null;
+                $summary = $type === 'freshdesk'
+                    ? $freshdeskSpool->payloadSummary($file->getPathname())
+                    : ['ticket_id' => null, 'event_type' => null];
                 $filesList[] = [
                     'name' => $file->getFilename(),
                     'path' => str_replace('\\', '/', $relativePath),
                     'size' => number_format($file->getSize() / 1024, 2).' KB',
                     'updated_at' => Carbon::createFromTimestamp($file->getMTime())->format('Y-m-d H:i:s'),
                     'quarantine_reason' => $quarantineMetadata['reason_code'] ?? null,
+                    'ticket_id' => $summary['ticket_id'],
+                    'event_type' => $summary['event_type'],
                 ];
             }
         }
@@ -407,7 +432,32 @@ class LogMonitorController extends Controller
             'folder' => $folder,
             'count' => $totalCount,
             'files' => array_slice($filesList, 0, 100),
+            'ticket_id' => $ticketId,
+            'ticket_counts' => $ticketCounts,
+            'truncated' => $truncated,
         ]);
+    }
+
+    /**
+     * Optional ticket filter of the spool browser.
+     * Returns null when absent, false when malformed, otherwise the ticket ID.
+     */
+    private function spoolTicketFilter(Request $request): int|false|null
+    {
+        $raw = $request->query('ticket_id');
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        if (! is_string($raw)) {
+            return false;
+        }
+
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        return ctype_digit($raw) && strlen($raw) <= 18 ? (int) $raw : false;
     }
 
     public function readSpoolFileContent(Request $request, DurableWebhookSpool $freshdeskSpool)
